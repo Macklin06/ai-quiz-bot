@@ -1,4 +1,3 @@
-# FORCE UPDATE: FIX LAZY AI HALLUCINATION
 import os
 import sys
 import io
@@ -34,12 +33,13 @@ def run_quiz_task(url: str, email: str, secret: str):
                 content = page.content()
                 print(f"[INFO] Question text extracted: {visible_text[:100]}...")
 
-                # --- NUCLEAR PROMPT: FORCES CALCULATION ---
+                # --- FORCE PRINT PROMPT ---
                 prompt = f"""
                 You are an Autonomous AI Agent.
                 
                 CONTEXT:
                 Current Page URL: {current_url}
+                Your Email: {email}
                 
                 PAGE TEXT:
                 {visible_text}
@@ -48,20 +48,21 @@ def run_quiz_task(url: str, email: str, secret: str):
                 {content[:15000]}
                 
                 GOAL:
-                1. ANALYZE the Page Text to find the specific math or data task.
-                2. WRITE Python code to solve it.
-                3. EXTRACT the Submission URL and JSON Key.
+                1. Solve the math/data question.
+                2. Extract the SUBMISSION URL and JSON Key.
                 
                 CRITICAL INSTRUCTIONS:
-                - **DO NOT** output placeholders like "your_answer" or "value".
-                - **CALCULATE** the real answer. It is usually a number or a specific string.
-                - If the page asks for your email, use the variable '{email}'.
+                - **MUST PRINT OUTPUT:** The last thing your script does MUST be `print(json.dumps(output))`.
+                - **NO SILENCE:** If you don't print, the system fails.
                 - Use `urllib.parse.urljoin` for relative links.
-                - Convert numpy/pandas types to standard Python types (int, float).
+                - Convert numpy/pandas types to standard int/float.
                 
-                FINAL OUTPUT FORMAT:
-                Print a valid JSON object at the end.
-                Example: {{"answer": 12345, "submit_url": "https://example.com/sub", "answer_key": "answer"}}
+                REQUIRED JSON FORMAT:
+                {{
+                    "answer": <the_calculated_value>,
+                    "submit_url": "<the_url>",
+                    "answer_key": "<the_key>"
+                }}
                 """
 
                 completion = client.chat.completions.create(
@@ -87,6 +88,10 @@ def run_quiz_task(url: str, email: str, secret: str):
                     
                     output_str = redirected_output.getvalue().strip()
                     
+                    if not output_str:
+                        raise ValueError("Script produced NO output (empty string)")
+
+                    # Flexible JSON finding
                     start_idx = output_str.find("{")
                     end_idx = output_str.rfind("}") + 1
                     if start_idx != -1 and end_idx != -1:
@@ -122,8 +127,7 @@ def run_quiz_task(url: str, email: str, secret: str):
                                         print("[SUCCESS] All tasks completed. Exiting.")
                                 else:
                                     print("[FAILURE] Answer rejected. Stopping.")
-                                    # Retry logic: Break to save time, or continue if you want to brute force.
-                                    # Breaking is safer to avoid loops.
+                                    # Retry logic: Break to avoid infinite loops, or continue to retry
                                     break
                             except:
                                 print("[ERROR] Invalid response format. Stopping.")
