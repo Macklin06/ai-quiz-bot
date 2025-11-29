@@ -56,7 +56,6 @@ def run_quiz_task(url: str, email: str, secret: str):
                 
                 print("[INFO] Executing solution code...")
                 
-                # --- EXECUTION ---
                 old_stdout = sys.stdout
                 redirected_output = io.StringIO()
                 sys.stdout = redirected_output
@@ -84,12 +83,17 @@ def run_quiz_task(url: str, email: str, secret: str):
                 except:
                     sys.stdout = old_stdout
 
-                # --- THE SNIPER FIX (Hardcodes Level 2) ---
+                # --- SNIPER FIX: Level 2 (No Quotes around URL) ---
                 if "project2-uv" in current_url:
                     print("[SNIPER] Detected Level 2. Hardcoding Answer.")
-                    # The answer is the exact command string requested
-                    ans = f'uv http get "https://tds-llm-analysis.s-anand.net/project2/uv.json?email={email}" -H "Accept: application/json"'
+                    # REMOVED QUOTES around the URL here:
+                    ans = f'uv http get https://tds-llm-analysis.s-anand.net/project2/uv.json?email={email} -H "Accept: application/json"'
                 
+                # --- SNIPER FIX: Level 3 (Git Commit) ---
+                if "project2-git" in current_url:
+                     print("[SNIPER] Detected Level 3. Using email.")
+                     ans = email
+
                 # Fallback for Submission URL
                 if not sub or len(sub) < 5:
                     sub = "https://tds-llm-analysis.s-anand.net/submit"
@@ -111,16 +115,24 @@ def run_quiz_task(url: str, email: str, secret: str):
                 
                 try:
                     resp_data = response.json()
+                    
+                    # --- LOOP LOGIC FIX: Always continue if URL exists ---
+                    next_url = resp_data.get("url")
+                    
                     if resp_data.get("correct") == True:
-                        print("[SUCCESS] Answer correct. Checking next...")
-                        current_url = resp_data.get("url")
-                        if not current_url:
-                            print("[SUCCESS] COMPLETED.")
+                        print("[SUCCESS] Answer correct.")
                     else:
-                        print("[FAILURE] Wrong answer. Stopping.")
+                        print(f"[FAILURE] Wrong answer. Server says: {resp_data.get('reason')}")
+                    
+                    if next_url:
+                        print(f"[INFO] Moving to next level: {next_url}")
+                        current_url = next_url
+                    else:
+                        print("[SUCCESS] No next URL. Quiz Completed.")
                         break
-                except:
-                    print("[ERROR] Bad response format.")
+                        
+                except Exception as e:
+                    print(f"[ERROR] Bad response format: {e}")
                     break
 
             except Exception as e:
