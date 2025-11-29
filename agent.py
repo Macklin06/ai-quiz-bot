@@ -4,6 +4,7 @@ import io
 import json
 import urllib.parse
 import requests
+import re # Added for better URL extraction
 from playwright.sync_api import sync_playwright
 from openai import OpenAI
 
@@ -31,39 +32,35 @@ def run_quiz_task(url: str, email: str, secret: str):
                 
                 visible_text = page.locator("body").inner_text()
                 content = page.content()
-                print(f"[INFO] Question text extracted: {visible_text[:100]}...")
+                print(f"[INFO] Text Len: {len(visible_text)}")
 
-                # --- SAFETY NET PROMPT ---
+                # --- SCORCHED EARTH PROMPT ---
                 prompt = f"""
-                You are an Autonomous AI Agent.
+                You are an Autonomous AI Agent in a LIVE EXAM.
                 
                 CONTEXT:
-                Current Page URL: {current_url}
-                Your Email: {email}
+                Current URL: {current_url}
+                Email: {email}
                 
                 PAGE TEXT:
                 {visible_text}
                 
-                HTML CONTENT:
-                {content[:15000]}
-                
                 GOAL:
-                1. Solve the math/data question.
-                2. Extract the SUBMISSION URL and JSON Key.
+                1. EXTRACT the Submission URL (look for 'https://.../submit' or similar).
+                2. SOLVE the question. 
                 
-                CRITICAL INSTRUCTIONS:
-                - WRITE A ROBUST SCRIPT.
-                - **WRAP YOUR ENTIRE LOGIC in a `try-except` block.**
-                - If successful, `print(json.dumps(result))`.
-                - If error, `print(json.dumps({{"error": str(e)}}))`.
-                - **NEVER EXIT WITHOUT PRINTING JSON.**
-                - Use `urllib.parse.urljoin` for relative links.
+                RULES:
+                - **FORBIDDEN:** Do NOT output "your_answer_here". You MUST calculate the real value.
+                - **REGEX:** Use `re.search` to find the submission URL if simple text search fails.
+                - **PRINTING:** You MUST `print(json.dumps(result))` at the end.
+                - **SAFETY:** Wrap logic in try/except.
+                - **DATA:** Convert numpy types to python int/float.
                 
-                REQUIRED JSON FORMAT:
+                REQUIRED JSON OUTPUT:
                 {{
-                    "answer": <value>,
-                    "submit_url": "<url>",
-                    "answer_key": "<key>"
+                    "answer": <calculated_value>,
+                    "submit_url": "<extracted_url>",
+                    "answer_key": "answer"
                 }}
                 """
 
@@ -78,7 +75,7 @@ def run_quiz_task(url: str, email: str, secret: str):
                 generated_code = completion.choices[0].message.content
                 generated_code = generated_code.replace("```python", "").replace("```", "").strip()
                 
-                print("[INFO] Executing generated solution code...")
+                print("[INFO] Executing solution code...")
                 
                 old_stdout = sys.stdout
                 redirected_output = io.StringIO()
@@ -89,11 +86,8 @@ def run_quiz_task(url: str, email: str, secret: str):
                     sys.stdout = old_stdout 
                     
                     output_str = redirected_output.getvalue().strip()
-                    
-                    # If empty, print warning but don't crash yet
                     if not output_str:
-                        print(f"[ERROR] Script produced NO output.")
-                        # Reroll strategy: if empty, break loop to retry or stop
+                        print("[ERROR] No output from script.")
                         break
 
                     start_idx = output_str.find("{")
@@ -102,59 +96,59 @@ def run_quiz_task(url: str, email: str, secret: str):
                         json_str = output_str[start_idx:end_idx]
                         result_json = json.loads(json_str)
                         
-                        # CHECK FOR ERROR FROM AI
-                        if "error" in result_json:
-                            print(f"[ERROR] AI Script reported error: {result_json['error']}")
-                            break
-
-                        calculated_answer = result_json.get("answer")
-                        submit_url = result_json.get("submit_url")
-                        answer_key = result_json.get("answer_key", "answer")
+                        ans = result_json.get("answer")
+                        sub = result_json.get("submit_url")
+                        key = result_json.get("answer_key", "answer")
                         
-                        print(f"[INFO] Calculated Result: {calculated_answer}")
-                        print(f"[INFO] Submission Target: {submit_url}")
+                        # ANTI-LAZY GUARD
+                        if str(ans) == "your_answer_here":
+                            print("[ERROR] AI returned placeholder. Retrying loop might help.")
+                            break
+                        
+                        print(f"[INFO] Calculated Result: {ans}")
+                        print(f"[INFO] Submission Target: {sub}")
 
-                        if submit_url:
-                            if not submit_url.startswith("http"):
-                                submit_url = urllib.parse.urljoin(current_url, submit_url)
+                        if sub:
+                            if not sub.startswith("http"):
+                                sub = urllib.parse.urljoin(current_url, sub)
 
                             payload = {
                                 "email": email,
                                 "secret": secret,
                                 "url": current_url,
-                                answer_key: calculated_answer
+                                key: ans
                             }
-                            response = requests.post(submit_url, json=payload)
+                            response = requests.post(sub, json=payload)
                             print(f"[INFO] Server Response: {response.status_code} - {response.text}")
                             
                             try:
                                 resp_data = response.json()
                                 if resp_data.get("correct") == True:
-                                    print("[SUCCESS] Answer correct. Checking for next task...")
+                                    print("[SUCCESS] Answer correct. Checking next...")
                                     current_url = resp_data.get("url")
                                     if not current_url:
-                                        print("[SUCCESS] All tasks completed. Exiting.")
+                                        print("[SUCCESS] COMPLETED.")
                                 else:
-                                    print("[FAILURE] Answer rejected. Stopping.")
+                                    print("[FAILURE] Wrong answer. Stopping.")
                                     break
                             except:
-                                print("[ERROR] Invalid response format. Stopping.")
+                                print("[ERROR] Bad response format.")
                                 break
                         else:
-                            print("[ERROR] No submission URL. Stopping.")
+                            print("[ERROR] No submission URL found.")
                             break
                     else:
-                        print(f"[ERROR] No valid JSON found. AI Output:\n{output_str}")
+                        print(f"[ERROR] Invalid JSON. Output: {output_str}")
                         break
                     
                 except Exception as e:
                     sys.stdout = old_stdout
-                    print(f"[ERROR] Code Execution Failed: {e}")
-                    print(f"[DEBUG] Failed Output:\n{output_str}")
+                    print(f"[ERROR] Execution Failed: {e}")
+                    print(f"[DEBUG] Output: {output_str}")
                     break 
 
             except Exception as e:
-                print(f"[CRITICAL] Unexpected error: {e}")
+                print(f"[CRITICAL] Error: {e}")
                 break
 
         browser.close()
