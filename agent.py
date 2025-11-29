@@ -2,7 +2,7 @@ import os
 import sys
 import io
 import json
-import urllib.parse  # <--- NEW: For fixing relative links
+import urllib.parse
 import requests
 from playwright.sync_api import sync_playwright
 from openai import OpenAI
@@ -33,7 +33,7 @@ def run_quiz_task(url: str, email: str, secret: str):
                 content = page.content()
                 print(f"[INFO] Question text extracted: {visible_text[:100]}...")
 
-                # --- UPDATED PROMPT: HANDLES RELATIVE URLS & PRINTING ---
+                # --- PARANOID PROMPT: PREVENTS KEY ERRORS ---
                 prompt = f"""
                 You are an Autonomous AI Agent.
                 
@@ -52,10 +52,12 @@ def run_quiz_task(url: str, email: str, secret: str):
                 3. Extract the JSON KEY (usually "answer").
                 
                 CRITICAL INSTRUCTIONS:
-                - If the text mentions a file/link (like "/data.csv"), it might be a RELATIVE URL.
-                - You MUST use `urllib.parse.urljoin('{current_url}', link)` in your Python code to construct the full URL before downloading.
-                - Convert numpy/pandas types to standard Python types.
-                - ALWAYS print the JSON object at the end.
+                - Use `urllib.parse.urljoin('{current_url}', link)` for all downloads.
+                - DATA SAFETY: Use `.get('key')` instead of `['key']` to avoid KeyErrors.
+                - DEBUGGING: Print "STEP 1", "STEP 2" etc.
+                - If a key or file is missing, PRINT the available keys/files to debug.
+                - Convert all numpy/pandas types to standard Python types.
+                - FINAL OUTPUT: Print the JSON object.
                 
                 Format: {{"answer": <calculated_value>, "submit_url": "<extracted_url>", "answer_key": "<key>"}}
                 """
@@ -78,7 +80,6 @@ def run_quiz_task(url: str, email: str, secret: str):
                 sys.stdout = redirected_output
                 
                 try:
-                    # Execute the code
                     exec(generated_code)
                     sys.stdout = old_stdout 
                     
@@ -97,9 +98,7 @@ def run_quiz_task(url: str, email: str, secret: str):
                         print(f"[INFO] Calculated Result: {calculated_answer}")
                         print(f"[INFO] Submission Target: {submit_url}")
 
-                        # SUBMIT
                         if submit_url:
-                            # Fix relative submit URLs too
                             if not submit_url.startswith("http"):
                                 submit_url = urllib.parse.urljoin(current_url, submit_url)
 
@@ -129,13 +128,13 @@ def run_quiz_task(url: str, email: str, secret: str):
                             print("[ERROR] No submission URL. Stopping.")
                             break
                     else:
-                        print(f"[ERROR] No valid JSON found. AI Output: {output_str}")
+                        print(f"[ERROR] No valid JSON found. AI Output:\n{output_str}")
                         break
                     
                 except Exception as e:
                     sys.stdout = old_stdout
                     print(f"[ERROR] Code Execution Failed: {e}")
-                    print(f"[DEBUG] Failed Output: {output_str}")
+                    print(f"[DEBUG] Failed Output:\n{output_str}")
                     break 
 
             except Exception as e:
