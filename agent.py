@@ -33,7 +33,7 @@ def run_quiz_task(url: str, email: str, secret: str):
                 content = page.content()
                 print(f"[INFO] Question text extracted: {visible_text[:100]}...")
 
-                # --- FORCE PRINT PROMPT ---
+                # --- SAFETY NET PROMPT ---
                 prompt = f"""
                 You are an Autonomous AI Agent.
                 
@@ -52,16 +52,18 @@ def run_quiz_task(url: str, email: str, secret: str):
                 2. Extract the SUBMISSION URL and JSON Key.
                 
                 CRITICAL INSTRUCTIONS:
-                - **MUST PRINT OUTPUT:** The last thing your script does MUST be `print(json.dumps(output))`.
-                - **NO SILENCE:** If you don't print, the system fails.
+                - WRITE A ROBUST SCRIPT.
+                - **WRAP YOUR ENTIRE LOGIC in a `try-except` block.**
+                - If successful, `print(json.dumps(result))`.
+                - If error, `print(json.dumps({{"error": str(e)}}))`.
+                - **NEVER EXIT WITHOUT PRINTING JSON.**
                 - Use `urllib.parse.urljoin` for relative links.
-                - Convert numpy/pandas types to standard int/float.
                 
                 REQUIRED JSON FORMAT:
                 {{
-                    "answer": <the_calculated_value>,
-                    "submit_url": "<the_url>",
-                    "answer_key": "<the_key>"
+                    "answer": <value>,
+                    "submit_url": "<url>",
+                    "answer_key": "<key>"
                 }}
                 """
 
@@ -88,16 +90,23 @@ def run_quiz_task(url: str, email: str, secret: str):
                     
                     output_str = redirected_output.getvalue().strip()
                     
+                    # If empty, print warning but don't crash yet
                     if not output_str:
-                        raise ValueError("Script produced NO output (empty string)")
+                        print(f"[ERROR] Script produced NO output.")
+                        # Reroll strategy: if empty, break loop to retry or stop
+                        break
 
-                    # Flexible JSON finding
                     start_idx = output_str.find("{")
                     end_idx = output_str.rfind("}") + 1
                     if start_idx != -1 and end_idx != -1:
                         json_str = output_str[start_idx:end_idx]
                         result_json = json.loads(json_str)
                         
+                        # CHECK FOR ERROR FROM AI
+                        if "error" in result_json:
+                            print(f"[ERROR] AI Script reported error: {result_json['error']}")
+                            break
+
                         calculated_answer = result_json.get("answer")
                         submit_url = result_json.get("submit_url")
                         answer_key = result_json.get("answer_key", "answer")
@@ -127,7 +136,6 @@ def run_quiz_task(url: str, email: str, secret: str):
                                         print("[SUCCESS] All tasks completed. Exiting.")
                                 else:
                                     print("[FAILURE] Answer rejected. Stopping.")
-                                    # Retry logic: Break to avoid infinite loops, or continue to retry
                                     break
                             except:
                                 print("[ERROR] Invalid response format. Stopping.")
