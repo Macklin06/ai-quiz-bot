@@ -1,3 +1,4 @@
+# FORCE UPDATE: FIX LAZY AI HALLUCINATION
 import os
 import sys
 import io
@@ -33,7 +34,7 @@ def run_quiz_task(url: str, email: str, secret: str):
                 content = page.content()
                 print(f"[INFO] Question text extracted: {visible_text[:100]}...")
 
-                # --- PARANOID PROMPT: PREVENTS KEY ERRORS ---
+                # --- NUCLEAR PROMPT: FORCES CALCULATION ---
                 prompt = f"""
                 You are an Autonomous AI Agent.
                 
@@ -47,19 +48,20 @@ def run_quiz_task(url: str, email: str, secret: str):
                 {content[:15000]}
                 
                 GOAL:
-                1. Solve the question.
-                2. Extract the SUBMISSION URL.
-                3. Extract the JSON KEY (usually "answer").
+                1. ANALYZE the Page Text to find the specific math or data task.
+                2. WRITE Python code to solve it.
+                3. EXTRACT the Submission URL and JSON Key.
                 
                 CRITICAL INSTRUCTIONS:
-                - Use `urllib.parse.urljoin('{current_url}', link)` for all downloads.
-                - DATA SAFETY: Use `.get('key')` instead of `['key']` to avoid KeyErrors.
-                - DEBUGGING: Print "STEP 1", "STEP 2" etc.
-                - If a key or file is missing, PRINT the available keys/files to debug.
-                - Convert all numpy/pandas types to standard Python types.
-                - FINAL OUTPUT: Print the JSON object.
+                - **DO NOT** output placeholders like "your_answer" or "value".
+                - **CALCULATE** the real answer. It is usually a number or a specific string.
+                - If the page asks for your email, use the variable '{email}'.
+                - Use `urllib.parse.urljoin` for relative links.
+                - Convert numpy/pandas types to standard Python types (int, float).
                 
-                Format: {{"answer": <calculated_value>, "submit_url": "<extracted_url>", "answer_key": "<key>"}}
+                FINAL OUTPUT FORMAT:
+                Print a valid JSON object at the end.
+                Example: {{"answer": 12345, "submit_url": "https://example.com/sub", "answer_key": "answer"}}
                 """
 
                 completion = client.chat.completions.create(
@@ -120,6 +122,8 @@ def run_quiz_task(url: str, email: str, secret: str):
                                         print("[SUCCESS] All tasks completed. Exiting.")
                                 else:
                                     print("[FAILURE] Answer rejected. Stopping.")
+                                    # Retry logic: Break to save time, or continue if you want to brute force.
+                                    # Breaking is safer to avoid loops.
                                     break
                             except:
                                 print("[ERROR] Invalid response format. Stopping.")
