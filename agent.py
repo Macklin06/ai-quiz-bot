@@ -4,7 +4,6 @@ import io
 import json
 import urllib.parse
 import requests
-import re
 from playwright.sync_api import sync_playwright
 from openai import OpenAI
 
@@ -32,15 +31,35 @@ def run_quiz_task(url: str, email: str, secret: str):
                 
                 visible_text = page.locator("body").inner_text()
                 content = page.content()
-                print(f"[INFO] Text Len: {len(visible_text)}")
+                print(f"[INFO] Question text extracted: {visible_text[:100]}...")
 
-                # --- PROMPT ---
+                # --- PARANOID PROMPT: PREVENTS KEY ERRORS ---
                 prompt = f"""
                 You are an Autonomous AI Agent.
-                CONTEXT: URL: {current_url} | Email: {email}
-                TEXT: {visible_text}
-                GOAL: Solve question, extract submit URL.
-                OUTPUT: JSON with keys "answer", "submit_url", "answer_key".
+                
+                CONTEXT:
+                Current Page URL: {current_url}
+                
+                PAGE TEXT:
+                {visible_text}
+                
+                HTML CONTENT:
+                {content[:15000]}
+                
+                GOAL:
+                1. Solve the question.
+                2. Extract the SUBMISSION URL.
+                3. Extract the JSON KEY (usually "answer").
+                
+                CRITICAL INSTRUCTIONS:
+                - Use `urllib.parse.urljoin('{current_url}', link)` for all downloads.
+                - DATA SAFETY: Use `.get('key')` instead of `['key']` to avoid KeyErrors.
+                - DEBUGGING: Print "STEP 1", "STEP 2" etc.
+                - If a key or file is missing, PRINT the available keys/files to debug.
+                - Convert all numpy/pandas types to standard Python types.
+                - FINAL OUTPUT: Print the JSON object.
+                
+                Format: {{"answer": <calculated_value>, "submit_url": "<extracted_url>", "answer_key": "<key>"}}
                 """
 
                 completion = client.chat.completions.create(
@@ -54,89 +73,72 @@ def run_quiz_task(url: str, email: str, secret: str):
                 generated_code = completion.choices[0].message.content
                 generated_code = generated_code.replace("```python", "").replace("```", "").strip()
                 
-                print("[INFO] Executing solution code...")
+                print("[INFO] Executing generated solution code...")
                 
                 old_stdout = sys.stdout
                 redirected_output = io.StringIO()
                 sys.stdout = redirected_output
                 
-                # Default values
-                ans = "not personalized"
-                sub = "https://tds-llm-analysis.s-anand.net/submit"
-                key = "answer"
-
                 try:
                     exec(generated_code)
                     sys.stdout = old_stdout 
+                    
                     output_str = redirected_output.getvalue().strip()
                     
                     start_idx = output_str.find("{")
                     end_idx = output_str.rfind("}") + 1
                     if start_idx != -1 and end_idx != -1:
-                        try:
-                            result_json = json.loads(output_str[start_idx:end_idx])
-                            ans = result_json.get("answer", ans)
-                            sub = result_json.get("submit_url", sub)
-                            key = result_json.get("answer_key", key)
-                        except:
-                            pass
-                except:
-                    sys.stdout = old_stdout
-
-                # --- SNIPER FIX: Level 2 (No Quotes around URL) ---
-                if "project2-uv" in current_url:
-                    print("[SNIPER] Detected Level 2. Hardcoding Answer.")
-                    # REMOVED QUOTES around the URL here:
-                    ans = f'uv http get https://tds-llm-analysis.s-anand.net/project2/uv.json?email={email} -H "Accept: application/json"'
-                
-                # --- SNIPER FIX: Level 3 (Git Commit) ---
-                if "project2-git" in current_url:
-                     print("[SNIPER] Detected Level 3. Using email.")
-                     ans = email
-
-                # Fallback for Submission URL
-                if not sub or len(sub) < 5:
-                    sub = "https://tds-llm-analysis.s-anand.net/submit"
-                
-                if not sub.startswith("http"):
-                    sub = urllib.parse.urljoin(current_url, sub)
-
-                print(f"[INFO] Final Answer: {ans}")
-                print(f"[INFO] Final Target: {sub}")
-
-                payload = {
-                    "email": email,
-                    "secret": secret,
-                    "url": current_url,
-                    key: ans
-                }
-                response = requests.post(sub, json=payload)
-                print(f"[INFO] Server Response: {response.status_code} - {response.text}")
-                
-                try:
-                    resp_data = response.json()
-                    
-                    # --- LOOP LOGIC FIX: Always continue if URL exists ---
-                    next_url = resp_data.get("url")
-                    
-                    if resp_data.get("correct") == True:
-                        print("[SUCCESS] Answer correct.")
-                    else:
-                        print(f"[FAILURE] Wrong answer. Server says: {resp_data.get('reason')}")
-                    
-                    if next_url:
-                        print(f"[INFO] Moving to next level: {next_url}")
-                        current_url = next_url
-                    else:
-                        print("[SUCCESS] No next URL. Quiz Completed.")
-                        break
+                        json_str = output_str[start_idx:end_idx]
+                        result_json = json.loads(json_str)
                         
+                        calculated_answer = result_json.get("answer")
+                        submit_url = result_json.get("submit_url")
+                        answer_key = result_json.get("answer_key", "answer")
+                        
+                        print(f"[INFO] Calculated Result: {calculated_answer}")
+                        print(f"[INFO] Submission Target: {submit_url}")
+
+                        if submit_url:
+                            if not submit_url.startswith("http"):
+                                submit_url = urllib.parse.urljoin(current_url, submit_url)
+
+                            payload = {
+                                "email": email,
+                                "secret": secret,
+                                "url": current_url,
+                                answer_key: calculated_answer
+                            }
+                            response = requests.post(submit_url, json=payload)
+                            print(f"[INFO] Server Response: {response.status_code} - {response.text}")
+                            
+                            try:
+                                resp_data = response.json()
+                                if resp_data.get("correct") == True:
+                                    print("[SUCCESS] Answer correct. Checking for next task...")
+                                    current_url = resp_data.get("url")
+                                    if not current_url:
+                                        print("[SUCCESS] All tasks completed. Exiting.")
+                                else:
+                                    print("[FAILURE] Answer rejected. Stopping.")
+                                    break
+                            except:
+                                print("[ERROR] Invalid response format. Stopping.")
+                                break
+                        else:
+                            print("[ERROR] No submission URL. Stopping.")
+                            break
+                    else:
+                        print(f"[ERROR] No valid JSON found. AI Output:\n{output_str}")
+                        break
+                    
                 except Exception as e:
-                    print(f"[ERROR] Bad response format: {e}")
-                    break
+                    sys.stdout = old_stdout
+                    print(f"[ERROR] Code Execution Failed: {e}")
+                    print(f"[DEBUG] Failed Output:\n{output_str}")
+                    break 
 
             except Exception as e:
-                print(f"[CRITICAL] Error: {e}")
+                print(f"[CRITICAL] Unexpected error: {e}")
                 break
 
         browser.close()
