@@ -148,6 +148,7 @@ CRITICAL REQUIREMENTS:
 - Handle missing data gracefully
 - For file downloads, use: urllib.parse.urljoin('{url}', relative_path)
 - ALWAYS end your code with print(json.dumps(result))
+- The answer_key should be exactly "answer" unless the question explicitly asks for a different key name
 
 OUTPUT FORMAT:
 Your code MUST end with:
@@ -160,6 +161,9 @@ result = {{
 }}
 print(json.dumps(result))
 ```
+
+IMPORTANT: The "answer_key" field should almost always be the string "answer" (not the answer value itself).
+Only change it if the instructions explicitly say to use a different key name like "result" or "solution".
 
 Generate ONLY Python code. NO explanations. Code must PRINT the JSON result."""
 
@@ -291,6 +295,11 @@ def submit_answer(current_url: str, email: str, secret: str, answer_data: dict,
         submit_url = answer_data.get("submit_url")
         answer_key = answer_data.get("answer_key", "answer")
         
+        # Validate answer_key - should typically be "answer" unless specified otherwise
+        if isinstance(answer_key, str) and len(answer_key) > 50:
+            logger.warning(f"{log_prefix} Q{q_num} | Suspicious answer_key: {answer_key[:50]}... Using 'answer'")
+            answer_key = "answer"
+        
         if not submit_url:
             logger.error(f"{log_prefix} Q{q_num} | No submit URL found")
             return None
@@ -308,7 +317,8 @@ def submit_answer(current_url: str, email: str, secret: str, answer_data: dict,
         }
         
         logger.info(f"{log_prefix} Q{q_num} | Submitting to: {submit_url}")
-        logger.debug(f"{log_prefix} Payload: {payload}")
+        logger.info(f"{log_prefix} Q{q_num} | Payload structure: email, secret, url, {answer_key}={type(answer).__name__}")
+        logger.debug(f"{log_prefix} Full payload: {payload}")
         
         # Submit with timeout
         response = requests.post(submit_url, json=payload, timeout=30)
@@ -329,7 +339,7 @@ def submit_answer(current_url: str, email: str, secret: str, answer_data: dict,
                 return resp_data.get("url")
                 
         except json.JSONDecodeError:
-            logger.error(f"{log_prefix} Q{q_num} | Invalid JSON response: {response.text}")
+            logger.error(f"{log_prefix} Q{q_num} | Invalid JSON response: {response.text[:200]}")
             return None
             
     except Exception as e:
