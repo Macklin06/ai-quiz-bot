@@ -4,141 +4,297 @@ import io
 import json
 import urllib.parse
 import requests
-from playwright.sync_api import sync_playwright
+import time
+import logging
+from datetime import datetime, timedelta
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from openai import OpenAI
 
+logger = logging.getLogger(__name__)
+
+# Initialize OpenAI client
 client = OpenAI(
     api_key=os.getenv("AI_PIPE_KEY"),
-    base_url="https://aipipe.org/openai/v1" 
+    base_url="https://aipipe.org/openai/v1"
 )
 
-def run_quiz_task(url: str, email: str, secret: str):
-    print(f"[INFO] Starting Task Chain at: {url}")
+class QuizTimeout(Exception):
+    """Raised when quiz execution exceeds time limit"""
+    pass
+
+def run_quiz_task(url: str, email: str, secret: str, request_id: int = None):
+    """
+    Main quiz task executor
     
-    with sync_playwright() as p:
-        print("[INFO] Launching headless browser...")
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
-        page = context.new_page()
-        
-        current_url = url
-        
-        while current_url:
-            print(f"\n[INFO] Navigating to: {current_url}")
-            try:
-                page.goto(current_url)
-                page.wait_for_selector("body")
+    Args:
+        url: Initial quiz URL
+        email: User email
+        secret: Authentication secret
+        request_id: Request tracking ID
+    """
+    log_prefix = f"[{request_id}]" if request_id else ""
+    start_time = time.time()
+    max_duration = 170  # 2:50 to leave buffer before 3:00 deadline
+    
+    logger.info(f"{log_prefix} Starting quiz chain at: {url}")
+    
+    try:
+        with sync_playwright() as p:
+            logger.info(f"{log_prefix} Launching browser...")
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            )
+            page = context.new_page()
+            
+            current_url = url
+            question_count = 0
+            max_questions = 50  # Safety limit
+            
+            while current_url and question_count < max_questions:
+                # Check timeout
+                elapsed = time.time() - start_time
+                if elapsed > max_duration:
+                    logger.error(f"{log_prefix} Timeout! Elapsed: {elapsed:.1f}s")
+                    raise QuizTimeout(f"Exceeded {max_duration}s limit")
                 
-                visible_text = page.locator("body").inner_text()
-                content = page.content()
-                print(f"[INFO] Question text extracted: {visible_text[:100]}...")
-
-                # --- PARANOID PROMPT: PREVENTS KEY ERRORS ---
-                prompt = f"""
-                You are an Autonomous AI Agent.
-                
-                CONTEXT:
-                Current Page URL: {current_url}
-                
-                PAGE TEXT:
-                {visible_text}
-                
-                HTML CONTENT:
-                {content[:15000]}
-                
-                GOAL:
-                1. Solve the question.
-                2. Extract the SUBMISSION URL.
-                3. Extract the JSON KEY (usually "answer").
-                
-                CRITICAL INSTRUCTIONS:
-                - Use `urllib.parse.urljoin('{current_url}', link)` for all downloads.
-                - DATA SAFETY: Use `.get('key')` instead of `['key']` to avoid KeyErrors.
-                - DEBUGGING: Print "STEP 1", "STEP 2" etc.
-                - If a key or file is missing, PRINT the available keys/files to debug.
-                - Convert all numpy/pandas types to standard Python types.
-                - FINAL OUTPUT: Print the JSON object.
-                
-                Format: {{"answer": <calculated_value>, "submit_url": "<extracted_url>", "answer_key": "<key>"}}
-                """
-
-                completion = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "You are a coding assistant. Output ONLY raw python code."},
-                        {"role": "user", "content": prompt}
-                    ]
-                )
-                
-                generated_code = completion.choices[0].message.content
-                generated_code = generated_code.replace("```python", "").replace("```", "").strip()
-                
-                print("[INFO] Executing generated solution code...")
-                
-                old_stdout = sys.stdout
-                redirected_output = io.StringIO()
-                sys.stdout = redirected_output
+                question_count += 1
+                remaining = max_duration - elapsed
+                logger.info(f"{log_prefix} Q{question_count} | Remaining: {remaining:.1f}s | URL: {current_url}")
                 
                 try:
-                    exec(generated_code)
-                    sys.stdout = old_stdout 
+                    # Fetch and parse question
+                    page.goto(current_url, timeout=30000, wait_until="networkidle")
+                    page.wait_for_selector("body", timeout=10000)
                     
-                    output_str = redirected_output.getvalue().strip()
+                    visible_text = page.locator("body").inner_text()
+                    html_content = page.content()
                     
-                    start_idx = output_str.find("{")
-                    end_idx = output_str.rfind("}") + 1
-                    if start_idx != -1 and end_idx != -1:
-                        json_str = output_str[start_idx:end_idx]
-                        result_json = json.loads(json_str)
-                        
-                        calculated_answer = result_json.get("answer")
-                        submit_url = result_json.get("submit_url")
-                        answer_key = result_json.get("answer_key", "answer")
-                        
-                        print(f"[INFO] Calculated Result: {calculated_answer}")
-                        print(f"[INFO] Submission Target: {submit_url}")
-
-                        if submit_url:
-                            if not submit_url.startswith("http"):
-                                submit_url = urllib.parse.urljoin(current_url, submit_url)
-
-                            payload = {
-                                "email": email,
-                                "secret": secret,
-                                "url": current_url,
-                                answer_key: calculated_answer
-                            }
-                            response = requests.post(submit_url, json=payload)
-                            print(f"[INFO] Server Response: {response.status_code} - {response.text}")
-                            
-                            try:
-                                resp_data = response.json()
-                                if resp_data.get("correct") == True:
-                                    print("[SUCCESS] Answer correct. Checking for next task...")
-                                    current_url = resp_data.get("url")
-                                    if not current_url:
-                                        print("[SUCCESS] All tasks completed. Exiting.")
-                                else:
-                                    print("[FAILURE] Answer rejected. Stopping.")
-                                    break
-                            except:
-                                print("[ERROR] Invalid response format. Stopping.")
-                                break
-                        else:
-                            print("[ERROR] No submission URL. Stopping.")
-                            break
-                    else:
-                        print(f"[ERROR] No valid JSON found. AI Output:\n{output_str}")
+                    logger.info(f"{log_prefix} Q{question_count} | Extracted {len(visible_text)} chars")
+                    
+                    # Generate solution
+                    answer_data = solve_question(
+                        current_url, 
+                        visible_text, 
+                        html_content,
+                        log_prefix,
+                        question_count
+                    )
+                    
+                    if not answer_data:
+                        logger.error(f"{log_prefix} Q{question_count} | Failed to generate solution")
                         break
                     
+                    # Submit answer
+                    next_url = submit_answer(
+                        current_url,
+                        email,
+                        secret,
+                        answer_data,
+                        log_prefix,
+                        question_count
+                    )
+                    
+                    current_url = next_url
+                    
+                except PlaywrightTimeoutError as e:
+                    logger.error(f"{log_prefix} Q{question_count} | Playwright timeout: {e}")
+                    break
                 except Exception as e:
-                    sys.stdout = old_stdout
-                    print(f"[ERROR] Code Execution Failed: {e}")
-                    print(f"[DEBUG] Failed Output:\n{output_str}")
-                    break 
+                    logger.error(f"{log_prefix} Q{question_count} | Error: {e}", exc_info=True)
+                    break
+            
+            browser.close()
+            
+            total_time = time.time() - start_time
+            logger.info(f"{log_prefix} Completed! Questions: {question_count}, Time: {total_time:.1f}s")
+            
+    except QuizTimeout as e:
+        logger.error(f"{log_prefix} {e}")
+    except Exception as e:
+        logger.error(f"{log_prefix} Fatal error: {e}", exc_info=True)
 
-            except Exception as e:
-                print(f"[CRITICAL] Unexpected error: {e}")
-                break
 
-        browser.close()
+def solve_question(url: str, text: str, html: str, log_prefix: str, q_num: int):
+    """
+    Generate solution code using LLM
+    
+    Returns: dict with 'answer', 'submit_url', 'answer_key'
+    """
+    try:
+        prompt = f"""You are an expert data analyst and Python programmer.
+
+CURRENT PAGE URL: {url}
+
+VISIBLE TEXT:
+{text[:8000]}
+
+HTML CONTENT:
+{html[:12000]}
+
+TASK:
+1. Analyze the question carefully
+2. Download any required files (use urllib.parse.urljoin for relative URLs)
+3. Process data (CSV, PDF, JSON, images, etc.)
+4. Calculate the correct answer
+5. Extract the submission URL and answer key from the page
+
+CRITICAL REQUIREMENTS:
+- Use try-except blocks for all operations
+- Use .get() for dictionary access to avoid KeyErrors
+- Print debug info: "STEP 1:", "STEP 2:", etc.
+- Convert numpy/pandas types to native Python (int, float, str, list)
+- Handle missing data gracefully
+- For file downloads, use: urllib.parse.urljoin('{url}', relative_path)
+
+OUTPUT FORMAT (JSON only):
+{{
+    "answer": <your_calculated_answer>,
+    "submit_url": "<extracted_submission_url>",
+    "answer_key": "answer"
+}}
+
+Generate clean Python code that prints only the final JSON object."""
+
+        logger.info(f"{log_prefix} Q{q_num} | Calling LLM...")
+        
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system", 
+                    "content": "You are a Python code generator. Output ONLY executable Python code, no explanations."
+                },
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2,
+            max_tokens=3000
+        )
+        
+        generated_code = completion.choices[0].message.content
+        generated_code = generated_code.replace("```python", "").replace("```", "").strip()
+        
+        logger.info(f"{log_prefix} Q{q_num} | Code generated ({len(generated_code)} chars)")
+        logger.debug(f"{log_prefix} Generated code:\n{generated_code[:500]}...")
+        
+        # Execute code safely
+        result = execute_code(generated_code, log_prefix, q_num)
+        return result
+        
+    except Exception as e:
+        logger.error(f"{log_prefix} Q{q_num} | LLM error: {e}", exc_info=True)
+        return None
+
+
+def execute_code(code: str, log_prefix: str, q_num: int):
+    """
+    Execute generated code in isolated environment
+    
+    Returns: dict with answer data or None
+    """
+    try:
+        # Redirect stdout
+        old_stdout = sys.stdout
+        redirected = io.StringIO()
+        sys.stdout = redirected
+        
+        # Create safe globals
+        safe_globals = {
+            '__builtins__': __builtins__,
+            'urllib': __import__('urllib'),
+            'requests': __import__('requests'),
+            'json': __import__('json'),
+            'pandas': __import__('pandas'),
+            'numpy': __import__('numpy'),
+            'PIL': __import__('PIL'),
+            'io': __import__('io'),
+            'base64': __import__('base64'),
+        }
+        
+        # Execute with timeout
+        exec(code, safe_globals)
+        
+        # Restore stdout
+        sys.stdout = old_stdout
+        output = redirected.getvalue()
+        
+        logger.info(f"{log_prefix} Q{q_num} | Code executed, output length: {len(output)}")
+        logger.debug(f"{log_prefix} Raw output:\n{output}")
+        
+        # Parse JSON from output
+        json_start = output.find("{")
+        json_end = output.rfind("}") + 1
+        
+        if json_start == -1 or json_end == 0:
+            logger.error(f"{log_prefix} Q{q_num} | No JSON found in output")
+            return None
+        
+        json_str = output[json_start:json_end]
+        result = json.loads(json_str)
+        
+        logger.info(f"{log_prefix} Q{q_num} | Parsed result: {result}")
+        return result
+        
+    except Exception as e:
+        sys.stdout = old_stdout
+        logger.error(f"{log_prefix} Q{q_num} | Execution error: {e}", exc_info=True)
+        return None
+
+
+def submit_answer(current_url: str, email: str, secret: str, answer_data: dict, 
+                 log_prefix: str, q_num: int):
+    """
+    Submit answer to server
+    
+    Returns: next URL or None
+    """
+    try:
+        answer = answer_data.get("answer")
+        submit_url = answer_data.get("submit_url")
+        answer_key = answer_data.get("answer_key", "answer")
+        
+        if not submit_url:
+            logger.error(f"{log_prefix} Q{q_num} | No submit URL found")
+            return None
+        
+        # Make URL absolute
+        if not submit_url.startswith("http"):
+            submit_url = urllib.parse.urljoin(current_url, submit_url)
+        
+        # Prepare payload
+        payload = {
+            "email": email,
+            "secret": secret,
+            "url": current_url,
+            answer_key: answer
+        }
+        
+        logger.info(f"{log_prefix} Q{q_num} | Submitting to: {submit_url}")
+        logger.debug(f"{log_prefix} Payload: {payload}")
+        
+        # Submit with timeout
+        response = requests.post(submit_url, json=payload, timeout=30)
+        
+        logger.info(f"{log_prefix} Q{q_num} | Response: {response.status_code}")
+        
+        try:
+            resp_data = response.json()
+            logger.info(f"{log_prefix} Q{q_num} | Server response: {resp_data}")
+            
+            if resp_data.get("correct"):
+                logger.info(f"{log_prefix} Q{q_num} | ✓ Correct!")
+                return resp_data.get("url")
+            else:
+                reason = resp_data.get("reason", "Unknown")
+                logger.warning(f"{log_prefix} Q{q_num} | ✗ Wrong: {reason}")
+                # Return next URL if provided (skip option)
+                return resp_data.get("url")
+                
+        except json.JSONDecodeError:
+            logger.error(f"{log_prefix} Q{q_num} | Invalid JSON response: {response.text}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"{log_prefix} Q{q_num} | Submit error: {e}", exc_info=True)
+        return None

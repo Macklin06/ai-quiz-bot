@@ -1,21 +1,30 @@
-# We use the official Playwright image. 
-# It comes with Python AND the Chrome browser pre-installed.
+# Use official Playwright image with Python and Chrome pre-installed
 FROM mcr.microsoft.com/playwright/python:v1.55.0-jammy
 
-
-# Set the working directory inside the container
+# Set working directory
 WORKDIR /app
 
-# Copy the requirements file we just created
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Copy requirements first (for Docker layer caching)
 COPY requirements.txt .
 
-# Install dependencies (FastAPI, OpenAI, etc.)
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy your source code (main.py, agent.py)
-COPY . .
+# Copy application code
+COPY main.py agent.py ./
 
-# Run the server
-# We bind to 0.0.0.0 so the outside world can reach it
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-#fix
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:8000/health')"
+
+# Run the application
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
