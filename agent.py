@@ -143,19 +143,25 @@ TASK:
 CRITICAL REQUIREMENTS:
 - Use try-except blocks for all operations
 - Use .get() for dictionary access to avoid KeyErrors
-- Print debug info: "STEP 1:", "STEP 2:", etc.
+- Print debug statements: print("STEP 1: Reading data")
 - Convert numpy/pandas types to native Python (int, float, str, list)
 - Handle missing data gracefully
 - For file downloads, use: urllib.parse.urljoin('{url}', relative_path)
+- ALWAYS end your code with print(json.dumps(result))
 
-OUTPUT FORMAT (JSON only):
-{{
-    "answer": <your_calculated_answer>,
-    "submit_url": "<extracted_submission_url>",
+OUTPUT FORMAT:
+Your code MUST end with:
+```python
+import json
+result = {{
+    "answer": your_calculated_answer,
+    "submit_url": "extracted_submission_url",
     "answer_key": "answer"
 }}
+print(json.dumps(result))
+```
 
-Generate clean Python code that prints only the final JSON object."""
+Generate ONLY Python code. NO explanations. Code must PRINT the JSON result."""
 
         logger.info(f"{log_prefix} Q{q_num} | Calling LLM...")
         
@@ -164,19 +170,27 @@ Generate clean Python code that prints only the final JSON object."""
             messages=[
                 {
                     "role": "system", 
-                    "content": "You are a Python code generator. Output ONLY executable Python code, no explanations."
+                    "content": "You are a Python code generator. Output ONLY executable Python code. The code MUST print JSON output. No markdown, no explanations."
                 },
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.2,
-            max_tokens=3000
+            temperature=0.1,
+            max_tokens=4000
         )
         
         generated_code = completion.choices[0].message.content
         generated_code = generated_code.replace("```python", "").replace("```", "").strip()
         
         logger.info(f"{log_prefix} Q{q_num} | Code generated ({len(generated_code)} chars)")
-        logger.debug(f"{log_prefix} Generated code:\n{generated_code[:500]}...")
+        
+        # Log the full generated code for debugging
+        logger.debug(f"{log_prefix} Generated code:\n{'-'*50}\n{generated_code}\n{'-'*50}")
+        
+        # Check if code has print statement
+        if 'print(' not in generated_code:
+            logger.warning(f"{log_prefix} Q{q_num} | Code missing print statement! Adding fallback...")
+            # Add print statement at the end
+            generated_code += '\nprint(json.dumps(result))'
         
         # Execute code safely
         result = execute_code(generated_code, log_prefix, q_num)
@@ -194,10 +208,12 @@ def execute_code(code: str, log_prefix: str, q_num: int):
     Returns: dict with answer data or None
     """
     try:
-        # Redirect stdout
+        # Redirect stdout AND stderr
         old_stdout = sys.stdout
+        old_stderr = sys.stderr
         redirected = io.StringIO()
         sys.stdout = redirected
+        sys.stderr = redirected
         
         # Create safe globals
         safe_globals = {
@@ -210,17 +226,30 @@ def execute_code(code: str, log_prefix: str, q_num: int):
             'PIL': __import__('PIL'),
             'io': __import__('io'),
             'base64': __import__('base64'),
+            'BeautifulSoup': __import__('bs4').BeautifulSoup,
+            're': __import__('re'),
         }
         
         # Execute with timeout
-        exec(code, safe_globals)
+        try:
+            exec(code, safe_globals)
+        except Exception as exec_error:
+            logger.error(f"{log_prefix} Q{q_num} | Execution error in code: {exec_error}")
+            # Continue to check output anyway
         
-        # Restore stdout
+        # Restore stdout/stderr
         sys.stdout = old_stdout
+        sys.stderr = old_stderr
         output = redirected.getvalue()
         
         logger.info(f"{log_prefix} Q{q_num} | Code executed, output length: {len(output)}")
-        logger.debug(f"{log_prefix} Raw output:\n{output}")
+        
+        # Log output for debugging
+        if output:
+            logger.debug(f"{log_prefix} Raw output:\n{output}")
+        else:
+            logger.warning(f"{log_prefix} Q{q_num} | No output produced!")
+            logger.debug(f"{log_prefix} Code was:\n{code}")
         
         # Parse JSON from output
         json_start = output.find("{")
@@ -228,6 +257,7 @@ def execute_code(code: str, log_prefix: str, q_num: int):
         
         if json_start == -1 or json_end == 0:
             logger.error(f"{log_prefix} Q{q_num} | No JSON found in output")
+            logger.error(f"{log_prefix} Full output: {output[:500]}")
             return None
         
         json_str = output[json_start:json_end]
@@ -236,8 +266,15 @@ def execute_code(code: str, log_prefix: str, q_num: int):
         logger.info(f"{log_prefix} Q{q_num} | Parsed result: {result}")
         return result
         
+    except json.JSONDecodeError as e:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        logger.error(f"{log_prefix} Q{q_num} | JSON parse error: {e}")
+        logger.error(f"{log_prefix} Attempted to parse: {json_str[:200] if 'json_str' in locals() else 'N/A'}")
+        return None
     except Exception as e:
         sys.stdout = old_stdout
+        sys.stderr = old_stderr
         logger.error(f"{log_prefix} Q{q_num} | Execution error: {e}", exc_info=True)
         return None
 
