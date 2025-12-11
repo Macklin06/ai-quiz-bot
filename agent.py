@@ -188,6 +188,7 @@ import pandas as pd
 import requests
 import urllib.parse
 from io import StringIO
+import dateutil.parser
 
 base_url = '{base_url}'
 csv_url = urllib.parse.urljoin(base_url, '/project2/messy.csv')
@@ -195,28 +196,33 @@ csv_url = urllib.parse.urljoin(base_url, '/project2/messy.csv')
 response = requests.get(csv_url)
 df = pd.read_csv(StringIO(response.text))
 
-# Clean column names
+# Clean column names - lowercase for consistency
 df.columns = df.columns.str.strip().str.lower()
 
-# Clean all string columns
+# Clean all string columns - strip whitespace
 for col in df.select_dtypes(include='object').columns:
     df[col] = df[col].str.strip()
 
-# Handle specific columns based on expected structure
+# Convert numeric columns
 if 'id' in df.columns:
     df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
 if 'value' in df.columns:
     df['value'] = pd.to_numeric(df['value'], errors='coerce').fillna(0).astype(int)
-if 'joined' in df.columns:
-    # Parse dates with explicit format handling
-    df['joined'] = pd.to_datetime(df['joined'], format='mixed', dayfirst=False, errors='coerce')
-    df['joined'] = df['joined'].dt.strftime('%Y-%m-%dT%H:%M:%S')
 
-# Sort by id if column exists
+# Parse dates with dateutil - handles multiple formats
+if 'joined' in df.columns:
+    def parse_date(x):
+        try:
+            return dateutil.parser.parse(str(x)).strftime('%Y-%m-%dT%H:%M:%S')
+        except:
+            return str(x)
+    df['joined'] = df['joined'].apply(parse_date)
+
+# Sort by id
 if 'id' in df.columns:
     df = df.sort_values('id').reset_index(drop=True)
 
-# Ensure column order matches expected: id, name, joined, value
+# Ensure column order: id, name, joined, value
 if set(['id', 'name', 'joined', 'value']).issubset(df.columns):
     df = df[['id', 'name', 'joined', 'value']]
 
@@ -224,10 +230,9 @@ answer = df.to_dict(orient='records')
 print(json.dumps({{"answer": answer}}))
 ```
 
-**3. ZIP FILE PROCESSING (logs with download bytes):**
+**3. ZIP FILE PROCESSING (logs with download bytes - JSONL format):**
 ```python
 import json
-import pandas as pd
 import requests
 import zipfile
 from io import BytesIO
@@ -241,20 +246,17 @@ total_bytes = 0
 
 with zipfile.ZipFile(BytesIO(response.content)) as z:
     for filename in z.namelist():
-        if filename.endswith('.csv'):
-            with z.open(filename) as f:
-                df = pd.read_csv(f)
-                df.columns = df.columns.str.strip().str.lower()
-                
-                # Clean string columns
-                for col in df.select_dtypes(include='object').columns:
-                    df[col] = df[col].str.strip()
-                
-                # Sum bytes for download events
-                if 'event' in df.columns and 'bytes' in df.columns:
-                    df['bytes'] = pd.to_numeric(df['bytes'], errors='coerce').fillna(0)
-                    download_bytes = df[df['event'] == 'download']['bytes'].sum()
-                    total_bytes += download_bytes
+        with z.open(filename) as f:
+            content = f.read().decode('utf-8')
+            # Handle JSONL (one JSON object per line)
+            for line in content.strip().split('\\n'):
+                if line.strip():
+                    try:
+                        record = json.loads(line)
+                        if record.get('event') == 'download':
+                            total_bytes += record.get('bytes', 0)
+                    except json.JSONDecodeError:
+                        pass
 
 # IMPORTANT: Add email-length mod 5 offset
 email = "{email}"
@@ -457,6 +459,7 @@ def execute_code(code: str, log_prefix: str, q_num: int):
             'datetime': __import__('datetime'),
             'time': __import__('time'),
             'pd': __import__('pandas'),
+            'dateutil': __import__('dateutil'),
         }
         
         # Add PIL with proper structure so both 'from PIL import Image' and 'PIL.Image' work
