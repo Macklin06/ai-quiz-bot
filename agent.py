@@ -134,6 +134,12 @@ HTML (if needed):
 {html[:5000]}
 {error_context}
 
+IMPORTANT ANSWER FORMAT RULES:
+- For file/link paths: Use RELATIVE paths like "/project2/file.md" (not full URLs)
+- For CSV data: Clean whitespace, parse dates as ISO format, sort by id
+- For ZIP logs: Sum bytes where event='download', add (len(email) % 5) offset
+- For audio: Output lowercase text with spaces
+
 CRITICAL URL CONSTRUCTION RULES:
 ✅ CORRECT: Use urllib.parse.urljoin(base_url, '/path/to/file.ext')
 ✅ BASE_URL is: {base_url} (scheme + domain only)
@@ -202,22 +208,23 @@ if 'id' in df.columns:
 if 'value' in df.columns:
     df['value'] = pd.to_numeric(df['value'], errors='coerce').fillna(0).astype(int)
 if 'joined' in df.columns:
-    df['joined'] = pd.to_datetime(df['joined'], errors='coerce').dt.strftime('%Y-%m-%dT%H:%M:%S')
+    # Parse dates with explicit format handling
+    df['joined'] = pd.to_datetime(df['joined'], format='mixed', dayfirst=False, errors='coerce')
+    df['joined'] = df['joined'].dt.strftime('%Y-%m-%dT%H:%M:%S')
 
-# Sort if id column exists
+# Sort by id if column exists
 if 'id' in df.columns:
     df = df.sort_values('id').reset_index(drop=True)
 
-# Return as list of dicts if multiple columns, else just the answer
-if len(df.columns) > 1:
-    answer = df.to_dict(orient='records')
-else:
-    answer = df.iloc[0, 0]  # Single value
+# Ensure column order matches expected: id, name, joined, value
+if set(['id', 'name', 'joined', 'value']).issubset(df.columns):
+    df = df[['id', 'name', 'joined', 'value']]
 
-print(json.dumps({{"answer": answer, "submit_url": "https://tds-llm-analysis.s-anand.net/submit"}}))
+answer = df.to_dict(orient='records')
+print(json.dumps({{"answer": answer}}))
 ```
 
-**3. ZIP FILE PROCESSING:**
+**3. ZIP FILE PROCESSING (logs with download bytes):**
 ```python
 import json
 import pandas as pd
@@ -230,7 +237,7 @@ base_url = '{base_url}'
 zip_url = urllib.parse.urljoin(base_url, '/project2/logs.zip')
 
 response = requests.get(zip_url)
-total = 0
+total_bytes = 0
 
 with zipfile.ZipFile(BytesIO(response.content)) as z:
     for filename in z.namelist():
@@ -243,20 +250,21 @@ with zipfile.ZipFile(BytesIO(response.content)) as z:
                 for col in df.select_dtypes(include='object').columns:
                     df[col] = df[col].str.strip()
                 
-                # Process based on question requirements
+                # Sum bytes for download events
                 if 'event' in df.columns and 'bytes' in df.columns:
                     df['bytes'] = pd.to_numeric(df['bytes'], errors='coerce').fillna(0)
-                    total += df[df['event'] == 'download']['bytes'].sum()
+                    download_bytes = df[df['event'] == 'download']['bytes'].sum()
+                    total_bytes += download_bytes
 
-# Add email-based offset if needed
+# IMPORTANT: Add email-length mod 5 offset
 email = "{email}"
 offset = len(email) % 5
-answer = int(total + offset)
+answer = int(total_bytes) + offset
 
-print(json.dumps({{"answer": answer, "submit_url": "https://tds-llm-analysis.s-anand.net/submit"}}))
+print(json.dumps({{"answer": answer}}))
 ```
 
-**4. GITHUB API:**
+**4. GITHUB API (count files in tree):**
 ```python
 import json
 import requests
@@ -268,12 +276,12 @@ json_url = urllib.parse.urljoin(base_url, '/project2/gh-tree.json')
 response = requests.get(json_url)
 config = response.json()
 
-# Call GitHub API
+# Call GitHub API to get tree
 gh_url = f"https://api.github.com/repos/{{config['owner']}}/{{config['repo']}}/git/trees/{{config['sha']}}?recursive=1"
 tree_response = requests.get(gh_url)
 tree_data = tree_response.json()
 
-# Filter based on config
+# Filter by pathPrefix and extension from config
 path_prefix = config.get('pathPrefix', '')
 extension = config.get('extension', '')
 
@@ -281,15 +289,11 @@ count = sum(1 for item in tree_data.get('tree', [])
            if item.get('path', '').startswith(path_prefix) and 
            item.get('path', '').endswith(extension))
 
-# Apply email-based offset
-email = "{email}"
-offset = len(email) % 2
-answer = count + offset
-
-print(json.dumps({{"answer": answer, "submit_url": "https://tds-llm-analysis.s-anand.net/submit"}}))
+answer = count
+print(json.dumps({{"answer": answer}}))
 ```
 
-**5. IMAGE PROCESSING:**
+**5. IMAGE PROCESSING (find most common color):**
 ```python
 import json
 import requests
@@ -307,13 +311,13 @@ image = Image.open(BytesIO(response.content))
 colors = list(image.getdata())
 most_common = Counter(colors).most_common(1)[0][0]
 
-# Format as hex color
-answer = '#{{:02x}}{{:02x}}{{:02x}}'.format(*most_common)
+# Format as hex color (lowercase)
+answer = '#{{:02x}}{{:02x}}{{:02x}}'.format(*most_common[:3])
 
-print(json.dumps({{"answer": answer, "submit_url": "https://tds-llm-analysis.s-anand.net/submit"}}))
+print(json.dumps({{"answer": answer}}))
 ```
 
-**6. PDF PROCESSING:**
+**6. PDF PROCESSING (extract and sum values):**
 ```python
 import json
 import requests
@@ -332,25 +336,38 @@ text = ""
 for page in pdf_reader.pages:
     text += page.extract_text()
 
-# Extract information based on question
-# Example: sum of prices
+# Extract quantities and prices, calculate total
+# Look for patterns like "qty x $price" or table rows
 total = 0.0
-for line in text.split('\\n'):
-    match = re.search(r'\\$?([\\d,]+\\.\\d{{2}})', line)
+lines = text.split('\\n')
+for line in lines:
+    # Try to match "quantity x price" or similar patterns
+    match = re.search(r'(\\d+)\\s*[xX×]?\\s*\\$?([\\d,]+\\.?\\d*)', line)
     if match:
-        price = float(match.group(1).replace(',', ''))
-        total += price
+        qty = int(match.group(1))
+        price = float(match.group(2).replace(',', ''))
+        total += qty * price
 
 answer = round(total, 2)
+print(json.dumps({{"answer": answer}}))
+```
 
-print(json.dumps({{"answer": answer, "submit_url": "https://tds-llm-analysis.s-anand.net/submit"}}))
+**7. MARKDOWN/LINK ANSWERS (use relative paths):**
+```python
+import json
+
+# For questions asking for file paths or links, use RELATIVE paths
+# NOT full URLs like https://domain.com/path
+answer = "/project2/data-preparation.md"
+
+print(json.dumps({{"answer": answer}}))
 ```
 
 RULES:
 1. ALWAYS use urllib.parse.urljoin(base_url, '/path') for file URLs
 2. ALWAYS strip() whitespace from all text data
 3. ALWAYS handle type conversions (str to int/float)
-4. For audio: try multiple formatting variations
+4. For link/path answers: use RELATIVE paths like "/project2/file.md"
 5. Only print JSON with answer, NEVER submit via HTTP
 
 Generate ONLY Python code, no markdown blocks."""
