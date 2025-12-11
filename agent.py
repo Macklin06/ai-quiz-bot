@@ -134,9 +134,11 @@ HTML (if needed):
 {html[:5000]}
 {error_context}
 
-IMPORTANT ANSWER FORMAT RULES:
-- For file/link paths: Use RELATIVE paths like "/project2/file.md" (not full URLs)
-- For CSV data: Clean whitespace, parse dates as ISO format, sort by id
+⚠️ CRITICAL ANSWER FORMAT RULES (READ CAREFULLY):
+- **FILE/LINK PATH ANSWERS**: Return ONLY the relative path like "/project2/file.md"
+  ❌ WRONG: "https://domain.com/project2/file.md" (full URL)
+  ✅ CORRECT: "/project2/file.md" (relative path starting with /)
+- For CSV data: Sort by id, dates must be ISO format YYYY-MM-DDTHH:MM:SS
 - For ZIP logs: Sum bytes where event='download', add (len(email) % 5) offset
 - For audio: Output lowercase text with spaces
 
@@ -181,7 +183,7 @@ answer = text.strip().lower()
 print(json.dumps({{"answer": answer}}))
 ```
 
-**2. CSV PROCESSING (Clean & Robust):**
+**2. CSV PROCESSING (Clean & Normalize):**
 ```python
 import json
 import pandas as pd
@@ -196,36 +198,40 @@ csv_url = urllib.parse.urljoin(base_url, '/project2/messy.csv')
 response = requests.get(csv_url)
 df = pd.read_csv(StringIO(response.text))
 
-# Clean column names - lowercase for consistency
+# 1. Clean column names - strip whitespace and lowercase
 df.columns = df.columns.str.strip().str.lower()
 
-# Clean all string columns - strip whitespace
+# 2. Strip whitespace from ALL string values
 for col in df.select_dtypes(include='object').columns:
-    df[col] = df[col].str.strip()
+    df[col] = df[col].astype(str).str.strip()
 
-# Convert numeric columns
+# 3. Convert 'id' to integer
 if 'id' in df.columns:
     df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
+
+# 4. Convert 'value' to integer
 if 'value' in df.columns:
     df['value'] = pd.to_numeric(df['value'], errors='coerce').fillna(0).astype(int)
 
-# Parse dates with dateutil - handles multiple formats
+# 5. Parse and normalize dates to ISO format (YYYY-MM-DDTHH:MM:SS)
 if 'joined' in df.columns:
-    def parse_date(x):
+    def normalize_date(x):
         try:
-            return dateutil.parser.parse(str(x)).strftime('%Y-%m-%dT%H:%M:%S')
+            # Parse various date formats and output consistent ISO format
+            dt = dateutil.parser.parse(str(x).strip())
+            return dt.strftime('%Y-%m-%dT%H:%M:%S')
         except:
-            return str(x)
-    df['joined'] = df['joined'].apply(parse_date)
+            return str(x).strip()
+    df['joined'] = df['joined'].apply(normalize_date)
 
-# Sort by id
-if 'id' in df.columns:
-    df = df.sort_values('id').reset_index(drop=True)
+# 6. SORT BY ID (ascending) - critical for matching expected output
+df = df.sort_values('id').reset_index(drop=True)
 
-# Ensure column order: id, name, joined, value
-if set(['id', 'name', 'joined', 'value']).issubset(df.columns):
+# 7. Ensure exact column order: id, name, joined, value
+if set(['id', 'name', 'joined', 'value']).issubset(set(df.columns)):
     df = df[['id', 'name', 'joined', 'value']]
 
+# 8. Convert to list of dicts
 answer = df.to_dict(orient='records')
 print(json.dumps({{"answer": answer}}))
 ```
@@ -354,23 +360,35 @@ answer = round(total, 2)
 print(json.dumps({{"answer": answer}}))
 ```
 
-**7. MARKDOWN/LINK ANSWERS (use relative paths):**
+**7. MARKDOWN/LINK/PATH ANSWERS (MUST use relative paths):**
 ```python
 import json
 
-# For questions asking for file paths or links, use RELATIVE paths
-# NOT full URLs like https://domain.com/path
-answer = "/project2/data-preparation.md"
+# ⚠️ CRITICAL: When a question asks for a file path, link, or URL:
+# ALWAYS return the RELATIVE path starting with /
+# NEVER return the full URL with domain!
+
+# Example: If the file is at https://tds-llm-analysis.s-anand.net/project2/data-preparation.md
+# ❌ WRONG: answer = "https://tds-llm-analysis.s-anand.net/project2/data-preparation.md"
+# ✅ CORRECT: answer = "/project2/data-preparation.md"
+
+# Just extract the path portion from any URL
+from urllib.parse import urlparse
+full_url = "https://example.com/project2/file.md"
+path = urlparse(full_url).path  # Returns "/project2/file.md"
+answer = path
 
 print(json.dumps({{"answer": answer}}))
 ```
 
 RULES:
-1. ALWAYS use urllib.parse.urljoin(base_url, '/path') for file URLs
+1. ALWAYS use urllib.parse.urljoin(base_url, '/path') for FETCHING files
 2. ALWAYS strip() whitespace from all text data
 3. ALWAYS handle type conversions (str to int/float)
-4. For link/path answers: use RELATIVE paths like "/project2/file.md"
+4. ⚠️ For ANSWER that is a path/link: return ONLY the relative path like "/project2/file.md"
+   - Use urlparse(url).path to extract just the path from a full URL
 5. Only print JSON with answer, NEVER submit via HTTP
+6. For CSV: Sort by 'id' ascending, dates in ISO format YYYY-MM-DDTHH:MM:SS
 
 Generate ONLY Python code, no markdown blocks."""
 
