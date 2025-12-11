@@ -198,40 +198,43 @@ csv_url = urllib.parse.urljoin(base_url, '/project2/messy.csv')
 response = requests.get(csv_url)
 df = pd.read_csv(StringIO(response.text))
 
-# 1. Clean column names - strip whitespace and lowercase
-df.columns = df.columns.str.strip().str.lower()
+# 1. Clean column names - strip whitespace only (keep original case)
+df.columns = df.columns.str.strip()
 
-# 2. Strip whitespace from ALL string values
+# 2. Normalize column names to lowercase for processing
+col_map = {{c: c.lower() for c in df.columns}}
+df = df.rename(columns=col_map)
+
+# 3. Strip whitespace from ALL string values
 for col in df.select_dtypes(include='object').columns:
     df[col] = df[col].astype(str).str.strip()
 
-# 3. Convert 'id' to integer
+# 4. Convert 'id' to integer
 if 'id' in df.columns:
     df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
 
-# 4. Convert 'value' to integer
+# 5. Convert 'value' to integer
 if 'value' in df.columns:
     df['value'] = pd.to_numeric(df['value'], errors='coerce').fillna(0).astype(int)
 
-# 5. Parse and normalize dates to ISO format (YYYY-MM-DDTHH:MM:SS)
+# 6. Parse and normalize dates to ISO format (YYYY-MM-DDTHH:MM:SS)
 if 'joined' in df.columns:
     def normalize_date(x):
         try:
-            # Parse various date formats and output consistent ISO format
             dt = dateutil.parser.parse(str(x).strip())
             return dt.strftime('%Y-%m-%dT%H:%M:%S')
         except:
             return str(x).strip()
     df['joined'] = df['joined'].apply(normalize_date)
 
-# 6. SORT BY ID (ascending) - critical for matching expected output
+# 7. SORT BY ID (ascending) - critical for matching expected output
 df = df.sort_values('id').reset_index(drop=True)
 
-# 7. Ensure exact column order: id, name, joined, value
+# 8. Ensure exact column order: id, name, joined, value (lowercase)
 if set(['id', 'name', 'joined', 'value']).issubset(set(df.columns)):
     df = df[['id', 'name', 'joined', 'value']]
 
-# 8. Convert to list of dicts
+# 9. Convert to list of dicts
 answer = df.to_dict(orient='records')
 print(json.dumps({{"answer": answer}}))
 ```
@@ -325,7 +328,7 @@ answer = '#{{:02x}}{{:02x}}{{:02x}}'.format(*most_common[:3])
 print(json.dumps({{"answer": answer}}))
 ```
 
-**6. PDF PROCESSING (extract and sum values):**
+**6. PDF INVOICE PROCESSING (calculate total from table):**
 ```python
 import json
 import requests
@@ -344,18 +347,31 @@ text = ""
 for page in pdf_reader.pages:
     text += page.extract_text()
 
-# Extract quantities and prices, calculate total
-# Look for patterns like "qty x $price" or table rows
-total = 0.0
-lines = text.split('\\n')
-for line in lines:
-    # Try to match "quantity x price" or similar patterns
-    match = re.search(r'(\\d+)\\s*[xX×]?\\s*\\$?([\\d,]+\\.?\\d*)', line)
-    if match:
-        qty = int(match.group(1))
-        price = float(match.group(2).replace(',', ''))
-        total += qty * price
+# PDF tables often extract as: Item, Quantity, UnitPrice on separate lines
+# Parse all numbers from the text and identify qty/price pairs
+lines = [l.strip() for l in text.split('\\n') if l.strip()]
 
+# Method 1: Look for lines that are just numbers (qty and price)
+numbers = []
+for line in lines:
+    # Skip header lines
+    if any(h in line.lower() for h in ['item', 'quantity', 'unitprice', 'invoice', 'total']):
+        continue
+    # Check if line is a number
+    try:
+        num = float(line.replace(',', ''))
+        numbers.append(num)
+    except ValueError:
+        pass
+
+# Numbers come in pairs: quantity, unit_price
+total = 0.0
+for i in range(0, len(numbers) - 1, 2):
+    qty = int(numbers[i])
+    price = float(numbers[i + 1])
+    total += qty * price
+
+# Round to 2 decimal places
 answer = round(total, 2)
 print(json.dumps({{"answer": answer}}))
 ```

@@ -19,4 +19,5 @@ dependencies = [
     "uvicorn>=0.38.0",
     "SpeechRecognition>=3.10.4",
     "pydub>=0.25.1",
+    "pypdf2>=3.0.1",
 ]
