@@ -97,7 +97,10 @@ def solve_with_llm(url: str, text: str, html: str, email: str,
                    log_prefix: str, q_num: int, attempt: int = 0, last_error: str = None):
     """Use LLM to solve the question"""
     try:
-        base_url = url.split('?')[0]
+        # Extract base URL properly - scheme + domain only
+        parsed = urllib.parse.urlparse(url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+        logger.info(f"{log_prefix} Q{q_num} | Base URL: {base_url}")
         
         error_context = ""
         if last_error:
@@ -107,18 +110,16 @@ def solve_with_llm(url: str, text: str, html: str, email: str,
 {last_error}
 
 FIX THE ERROR! Common fixes:
-- Audio wrong? Try: text.lower(), text.title(), text.upper(), or text.replace(' ', '')
-- CSV wrong? Ensure: strip whitespace from values, exact column order, int types
-- ZIP wrong? Use pd.read_csv(f) where f = z.open(filename)
-- PDF wrong? Use regex to extract quantities and prices from text
-- Always strip() ALL data, not just column names
+- Audio wrong? Try different case/formatting variations
+- CSV wrong? Check column order, data types, whitespace
+- 404 errors? Use correct base_url construction
+- Always strip() ALL data and check types
 """
 
         prompt = f"""Generate Python code to solve this quiz question.
 
 ⛔ DO NOT SUBMIT ANSWERS IN YOUR CODE ⛔
 Your code calculates the answer and prints JSON. That's it.
-Another process will handle the actual submission.
 
 URL: {url}
 BASE_URL: {base_url}
@@ -128,110 +129,21 @@ ATTEMPT: {attempt + 1} of {MAX_RETRIES}
 PAGE TEXT:
 {text[:15000]}
 
-HTML:
-{html[:10000]}
+HTML (if needed):
+{html[:5000]}
 {error_context}
 
-🎯 YOUR ONLY JOB:
-1. Read the question
-2. Calculate/extract the answer
-3. Print: print(json.dumps({{"answer": result, "submit_url": "https://tds-llm-analysis.s-anand.net/submit"}}))
+CRITICAL URL CONSTRUCTION RULES:
+✅ CORRECT: Use urllib.parse.urljoin(base_url, '/path/to/file.ext')
+✅ BASE_URL is: {base_url} (scheme + domain only)
+✅ Always use absolute paths starting with /
 
-❌ NEVER DO THIS:
-- requests.post(submit_url, ...)
-- Any HTTP POST to submit
-- Do not include email/secret in your code
-- Just calculate and print JSON
+❌ WRONG: Don't append base_url + '/project2/file' 
+❌ WRONG: Don't use f"{{base_url}}/project2/file"
 
-✅ DO THIS:
-- Calculate the answer
-- Print JSON with answer
-- That's all!
+CODE TEMPLATE EXAMPLES:
 
-CODE EXAMPLES:
-
-**SIMPLE TEXT ANSWER:**
-```python
-import json
-answer = "the_text_answer_from_page"
-print(json.dumps({{"answer": answer, "submit_url": "https://tds-llm-analysis.s-anand.net/submit"}}))
-```
-
-**COMMAND GENERATION:**
-```python
-import json
-answer = "git add file.txt"
-print(json.dumps({{"answer": answer, "submit_url": "https://tds-llm-analysis.s-anand.net/submit"}}))
-```
-
-**CSV PROCESSING (MESSY DATA):**
-```python
-import json
-import pandas as pd
-import requests
-from io import StringIO
-import urllib.parse
-
-base_url = '{base_url}'
-csv_url = urllib.parse.urljoin(base_url, '/project2/messy.csv')
-response = requests.get(csv_url)
-df = pd.read_csv(StringIO(response.text))
-
-# Strip ALL whitespace from column names AND values
-df.columns = df.columns.str.strip()
-df.columns = df.columns.str.lower()
-
-# Strip string values too
-for col in df.select_dtypes(include='object').columns:
-    df[col] = df[col].str.strip()
-
-# Parse dates - handle multiple formats
-df['joined'] = pd.to_datetime(df['joined'], errors='coerce').dt.strftime('%Y-%m-%dT%H:%M:%S')
-df['value'] = pd.to_numeric(df['value'], errors='coerce').fillna(0).astype(int)
-df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
-
-# Sort and reset index
-df = df.sort_values('id').reset_index(drop=True)
-
-# Ensure exact column order: id, name, joined, value
-df = df[['id', 'name', 'joined', 'value']]
-
-answer = df.to_dict(orient='records')
-print(json.dumps({{"answer": answer, "submit_url": "https://tds-llm-analysis.s-anand.net/submit"}}))
-```
-
-**JSON WITH GITHUB API (tree structure):**
-```python
-import json
-import requests
-import urllib.parse
-
-base_url = '{base_url}'
-json_url = urllib.parse.urljoin(base_url, '/project2/gh-tree.json')
-response = requests.get(json_url)
-config = response.json()
-
-# This has: owner, repo, sha, pathPrefix, extension
-# Need to call GitHub API to get tree
-gh_url = f"https://api.github.com/repos/{{config['owner']}}/{{config['repo']}}/git/trees/{{config['sha']}}?recursive=1"
-tree_response = requests.get(gh_url)
-tree_data = tree_response.json()
-
-# Now filter by pathPrefix and extension
-path_prefix = config.get('pathPrefix', '')
-extension = config.get('extension', '')
-count = sum(1 for item in tree_data.get('tree', [])
-           if item.get('path', '').startswith(path_prefix) and 
-           item.get('path', '').endswith(extension))
-
-email = "{email}"
-offset = len(email) % 2
-answer = count + offset
-
-print(json.dumps({{"answer": answer, "submit_url": "https://tds-llm-analysis.s-anand.net/submit"}}))
-```
-
-**AUDIO TRANSCRIPTION (with retry logic):**
+**1. AUDIO TRANSCRIPTION (Multiple Formats):**
 ```python
 import json
 import speech_recognition as sr
@@ -252,42 +164,69 @@ with sr.AudioFile("audio.wav") as source:
     audio_data = recognizer.record(source)
     text = recognizer.recognize_google(audio_data)
 
-# ADAPTIVE FORMAT based on attempt number (RETRY STRATEGY)
-attempt = {attempt + 1}  # Current attempt number
-if attempt == 1:
-    answer = text.strip()  # Try as-is first
-elif attempt == 2:
-    answer = text.strip().lower()  # Try lowercase
-elif attempt == 3:
-    answer = text.strip().title()  # Try Title Case
-else:
-    answer = text.strip().upper()  # Try UPPERCASE
+# Try multiple variations on different attempts
+attempt = {attempt + 1}
+text = text.strip()
+
+# Try different formatting
+variations = [
+    text,                           # As-is
+    text.lower(),                   # lowercase
+    text.title(),                   # Title Case
+    text.upper(),                   # UPPERCASE
+    text.replace(' ', ''),          # no spaces
+    text.replace(' ', '-'),         # dashes
+]
+
+# Use modulo to cycle through variations
+answer = variations[attempt % len(variations)]
 
 print(json.dumps({{"answer": answer, "submit_url": "https://tds-llm-analysis.s-anand.net/submit"}}))
 ```
 
-**IMAGE PROCESSING:**
+**2. CSV PROCESSING (Clean & Robust):**
 ```python
 import json
+import pandas as pd
 import requests
-from PIL import Image
-from collections import Counter
-from io import BytesIO
 import urllib.parse
+from io import StringIO
 
 base_url = '{base_url}'
-image_url = urllib.parse.urljoin(base_url, '/project2/heatmap.png')
-response = requests.get(image_url)
+csv_url = urllib.parse.urljoin(base_url, '/project2/messy.csv')
 
-image = Image.open(BytesIO(response.content))
-colors = list(image.getdata())
-most_common = Counter(colors).most_common(1)[0][0]
-answer = '#{{:02x}}{{:02x}}{{:02x}}'.format(*most_common)
+response = requests.get(csv_url)
+df = pd.read_csv(StringIO(response.text))
+
+# Clean column names
+df.columns = df.columns.str.strip().str.lower()
+
+# Clean all string columns
+for col in df.select_dtypes(include='object').columns:
+    df[col] = df[col].str.strip()
+
+# Handle specific columns based on expected structure
+if 'id' in df.columns:
+    df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
+if 'value' in df.columns:
+    df['value'] = pd.to_numeric(df['value'], errors='coerce').fillna(0).astype(int)
+if 'joined' in df.columns:
+    df['joined'] = pd.to_datetime(df['joined'], errors='coerce').dt.strftime('%Y-%m-%dT%H:%M:%S')
+
+# Sort if id column exists
+if 'id' in df.columns:
+    df = df.sort_values('id').reset_index(drop=True)
+
+# Return as list of dicts if multiple columns, else just the answer
+if len(df.columns) > 1:
+    answer = df.to_dict(orient='records')
+else:
+    answer = df.iloc[0, 0]  # Single value
 
 print(json.dumps({{"answer": answer, "submit_url": "https://tds-llm-analysis.s-anand.net/submit"}}))
 ```
 
-**ZIP FILE PROCESSING:**
+**3. ZIP FILE PROCESSING:**
 ```python
 import json
 import pandas as pd
@@ -298,19 +237,27 @@ import urllib.parse
 
 base_url = '{base_url}'
 zip_url = urllib.parse.urljoin(base_url, '/project2/logs.zip')
-response = requests.get(zip_url)
 
+response = requests.get(zip_url)
 total = 0
+
 with zipfile.ZipFile(BytesIO(response.content)) as z:
     for filename in z.namelist():
         if filename.endswith('.csv'):
             with z.open(filename) as f:
                 df = pd.read_csv(f)
                 df.columns = df.columns.str.strip().str.lower()
-                # Filter and sum based on question
-                df_filtered = df[df['event'].str.strip() == 'download']
-                total += df_filtered['bytes'].sum()
+                
+                # Clean string columns
+                for col in df.select_dtypes(include='object').columns:
+                    df[col] = df[col].str.strip()
+                
+                # Process based on question requirements
+                if 'event' in df.columns and 'bytes' in df.columns:
+                    df['bytes'] = pd.to_numeric(df['bytes'], errors='coerce').fillna(0)
+                    total += df[df['event'] == 'download']['bytes'].sum()
 
+# Add email-based offset if needed
 email = "{email}"
 offset = len(email) % 5
 answer = int(total + offset)
@@ -318,7 +265,64 @@ answer = int(total + offset)
 print(json.dumps({{"answer": answer, "submit_url": "https://tds-llm-analysis.s-anand.net/submit"}}))
 ```
 
-**PDF PROCESSING:**
+**4. GITHUB API:**
+```python
+import json
+import requests
+import urllib.parse
+
+base_url = '{base_url}'
+json_url = urllib.parse.urljoin(base_url, '/project2/gh-tree.json')
+
+response = requests.get(json_url)
+config = response.json()
+
+# Call GitHub API
+gh_url = f"https://api.github.com/repos/{{config['owner']}}/{{config['repo']}}/git/trees/{{config['sha']}}?recursive=1"
+tree_response = requests.get(gh_url)
+tree_data = tree_response.json()
+
+# Filter based on config
+path_prefix = config.get('pathPrefix', '')
+extension = config.get('extension', '')
+
+count = sum(1 for item in tree_data.get('tree', [])
+           if item.get('path', '').startswith(path_prefix) and 
+           item.get('path', '').endswith(extension))
+
+# Apply email-based offset
+email = "{email}"
+offset = len(email) % 2
+answer = count + offset
+
+print(json.dumps({{"answer": answer, "submit_url": "https://tds-llm-analysis.s-anand.net/submit"}}))
+```
+
+**5. IMAGE PROCESSING:**
+```python
+import json
+import requests
+from PIL import Image
+from collections import Counter
+from io import BytesIO
+import urllib.parse
+
+base_url = '{base_url}'
+image_url = urllib.parse.urljoin(base_url, '/project2/heatmap.png')
+
+response = requests.get(image_url)
+image = Image.open(BytesIO(response.content))
+
+colors = list(image.getdata())
+most_common = Counter(colors).most_common(1)[0][0]
+
+# Format as hex color
+answer = '#{{:02x}}{{:02x}}{{:02x}}'.format(*most_common)
+
+print(json.dumps({{"answer": answer, "submit_url": "https://tds-llm-analysis.s-anand.net/submit"}}))
+```
+
+**6. PDF PROCESSING:**
 ```python
 import json
 import requests
@@ -329,35 +333,34 @@ import re
 
 base_url = '{base_url}'
 pdf_url = urllib.parse.urljoin(base_url, '/project2/invoice.pdf')
-response = requests.get(pdf_url)
 
+response = requests.get(pdf_url)
 pdf_reader = PyPDF2.PdfReader(BytesIO(response.content))
+
 text = ""
 for page in pdf_reader.pages:
     text += page.extract_text()
 
-# Extract line items - look for patterns like "2 x $10.00"
-# This depends on PDF structure - might need regex
-lines = text.split('\\n')
+# Extract information based on question
+# Example: sum of prices
 total = 0.0
-for line in lines:
-    # Example: match "quantity price" patterns
-    match = re.search(r'(\\d+)\\s+x?\\s*\\$?([\\d,.]+)', line)
+for line in text.split('\\n'):
+    match = re.search(r'\\$?([\\d,]+\\.\\d{{2}})', line)
     if match:
-        qty = int(match.group(1))
-        price = float(match.group(2).replace(',', ''))
-        total += qty * price
+        price = float(match.group(1).replace(',', ''))
+        total += price
 
 answer = round(total, 2)
+
 print(json.dumps({{"answer": answer, "submit_url": "https://tds-llm-analysis.s-anand.net/submit"}}))
 ```
 
-CRITICAL RULES:
-- Always strip() column names for CSV
-- For JSON with owner/repo/sha, call GitHub API
-- Use base_url without query params for files
-- Always json.dumps() the output
-- Handle all exceptions
+RULES:
+1. ALWAYS use urllib.parse.urljoin(base_url, '/path') for file URLs
+2. ALWAYS strip() whitespace from all text data
+3. ALWAYS handle type conversions (str to int/float)
+4. For audio: try multiple formatting variations
+5. Only print JSON with answer, NEVER submit via HTTP
 
 Generate ONLY Python code, no markdown blocks."""
 
@@ -368,21 +371,12 @@ Generate ONLY Python code, no markdown blocks."""
             messages=[
                 {
                     "role": "system", 
-                    "content": f"""You are a Python code generator. Your ONLY job is to calculate answers, NOT submit them.
-
-🚨 NEVER EVER make HTTP POST requests in your code. NEVER call requests.post() to submit answers.
-
-Your code should:
-1. Calculate/extract the answer
-2. Print ONLY: print(json.dumps({{"answer": answer, "submit_url": "https://tds-llm-analysis.s-anand.net/submit"}}))
-
-CSV: Strip whitespace from columns AND values, ensure column order [id, name, joined, value]
-GitHub: Call API with owner/repo/sha from JSON
-ZIP: Use pd.read_csv(f) where f = z.open(filename)
-PDF: Extract text, parse with regex
-Audio (attempt {attempt+1}): Try text.strip(), text.lower(), text.title() based on attempt
-
-NEVER submit answers via HTTP POST. Just calculate and print JSON."""
+                    "content": """You are a Python code generator. Rules:
+1. NEVER make HTTP POST requests to submit answers
+2. Only calculate and print JSON
+3. Use urllib.parse.urljoin(base_url, '/path') for all file URLs
+4. Strip whitespace from all data
+5. Try multiple format variations for ambiguous data (audio, text)"""
                 },
                 {"role": "user", "content": prompt}
             ],
@@ -403,7 +397,9 @@ NEVER submit answers via HTTP POST. Just calculate and print JSON."""
                     code = '\n'.join(code.split('\n')[1:])
         
         logger.info(f"{log_prefix} Q{q_num} | Generated {len(code)} chars of code")
-        logger.info(f"{log_prefix} Code:\n{code}\n")
+        
+        # Log the generated code for debugging
+        logger.debug(f"{log_prefix} Q{q_num} | Code:\n{code[:2000]}\n")
         
         result, error = execute_code(code, log_prefix, q_num)
         
@@ -440,43 +436,30 @@ def execute_code(code: str, log_prefix: str, q_num: int):
             're': __import__('re'),
             'io': __import__('io'),
             'sys': sys,
+            'zipfile': __import__('zipfile'),
             'StringIO': __import__('io').StringIO,
             'BytesIO': __import__('io').BytesIO,
             'Counter': __import__('collections').Counter,
             'defaultdict': __import__('collections').defaultdict,
             'datetime': __import__('datetime'),
             'time': __import__('time'),
+            'pd': __import__('pandas'),
         }
         
-        try:
-            from PIL import Image
-            safe_env['Image'] = Image
-        except ImportError:
-            pass
+        # Add optional imports
+        optional_imports = [
+            ('PIL', 'Image', lambda: __import__('PIL').Image),
+            ('bs4', 'BeautifulSoup', lambda: __import__('bs4').BeautifulSoup),
+            ('speech_recognition', 'sr', lambda: __import__('speech_recognition')),
+            ('pydub', 'AudioSegment', lambda: __import__('pydub').AudioSegment),
+            ('PyPDF2', 'PyPDF2', lambda: __import__('PyPDF2')),
+        ]
         
-        try:
-            from bs4 import BeautifulSoup
-            safe_env['BeautifulSoup'] = BeautifulSoup
-        except ImportError:
-            pass
-        
-        try:
-            import speech_recognition as sr
-            safe_env['sr'] = sr
-        except ImportError:
-            pass
-        
-        try:
-            from pydub import AudioSegment
-            safe_env['AudioSegment'] = AudioSegment
-        except ImportError:
-            pass
-        
-        try:
-            import PyPDF2
-            safe_env['PyPDF2'] = PyPDF2
-        except ImportError:
-            pass
+        for module_name, env_name, import_func in optional_imports:
+            try:
+                safe_env[env_name] = import_func()
+            except ImportError:
+                pass
         
         exec(code, safe_env)
         
@@ -489,18 +472,17 @@ def execute_code(code: str, log_prefix: str, q_num: int):
         if errors:
             logger.warning(f"{log_prefix} Q{q_num} | Stderr: {errors[:1000]}")
         
-        logger.info(f"{log_prefix} Q{q_num} | Output: {output[:500]}")
-        
         if not output.strip():
             return None, "No output produced"
         
         try:
             output = output.strip()
             
-            # Check if output contains submission response (wrong!)
+            # Check if code is submitting (wrong!)
             if '"correct"' in output.lower() and '"reason"' in output.lower():
-                return None, "Code is submitting answers instead of just calculating. DO NOT use requests.post() to submit. Only print the answer JSON."
+                return None, "Code is submitting answers. DO NOT use requests.post(). Only print answer JSON."
             
+            # Extract JSON
             start = output.find('{')
             end = output.rfind('}') + 1
             
@@ -511,13 +493,14 @@ def execute_code(code: str, log_prefix: str, q_num: int):
                 if 'answer' in data and 'submit_url' in data:
                     answer = data['answer']
                     
+                    # Convert numpy types to Python types
                     if hasattr(answer, 'item'):
                         answer = answer.item()
                     elif hasattr(answer, 'tolist'):
                         answer = answer.tolist()
                     
                     data['answer'] = answer
-                    logger.info(f"{log_prefix} Q{q_num} | Answer: {answer} (type: {type(answer).__name__})")
+                    logger.info(f"{log_prefix} Q{q_num} | Answer: {str(answer)[:200]} (type: {type(answer).__name__})")
                     return data, None
                 else:
                     return None, "JSON missing required fields"
@@ -532,8 +515,8 @@ def execute_code(code: str, log_prefix: str, q_num: int):
         sys.stderr = old_stderr
         import traceback
         tb = traceback.format_exc()
-        logger.error(f"{log_prefix} Q{q_num} | Error: {e}\n{tb}")
-        return None, f"{e}\n{tb}"
+        logger.error(f"{log_prefix} Q{q_num} | Error: {e}")
+        return None, f"{e}"
 
 
 def submit_answer(current_url: str, email: str, secret: str, answer_obj: dict, 
@@ -554,10 +537,8 @@ def submit_answer(current_url: str, email: str, secret: str, answer_obj: dict,
         }
         
         logger.info(f"{log_prefix} Q{q_num} | Submitting to: {submit_url}")
-        logger.info(f"{log_prefix} Q{q_num} | Answer: {answer}")
         
         resp = requests.post(submit_url, json=payload, timeout=30)
-        logger.info(f"{log_prefix} Q{q_num} | Response {resp.status_code}: {resp.text[:500]}")
         
         if resp.status_code != 200:
             logger.error(f"{log_prefix} Q{q_num} | HTTP {resp.status_code}")
@@ -569,13 +550,12 @@ def submit_answer(current_url: str, email: str, secret: str, answer_obj: dict,
             if data.get('correct'):
                 logger.info(f"{log_prefix} Q{q_num} | ✓ CORRECT!")
             else:
-                logger.warning(f"{log_prefix} Q{q_num} | ✗ WRONG: {data.get('reason', '')}")
+                reason = data.get('reason', '')
+                logger.warning(f"{log_prefix} Q{q_num} | ✗ WRONG: {reason}")
             
             next_url = data.get('url')
             if next_url:
-                logger.info(f"{log_prefix} Q{q_num} | Next: {next_url[:100]}")
-            else:
-                logger.info(f"{log_prefix} Q{q_num} | Quiz end")
+                logger.info(f"{log_prefix} Q{q_num} | Next URL received")
             
             return next_url
             
