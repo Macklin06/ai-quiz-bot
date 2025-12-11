@@ -15,3 +15,5 @@ wheels/
 __pycache__/
 *.pyc
 DS_Store
+
+test_local.py
