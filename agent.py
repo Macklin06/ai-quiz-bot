@@ -510,7 +510,8 @@ def execute_code(code: str, log_prefix: str, q_num: int):
                 json_str = output[start:end]
                 data = json.loads(json_str)
                 
-                if 'answer' in data and 'submit_url' in data:
+                # Accept either 'answer' key or just use the data if it has what we need
+                if 'answer' in data:
                     answer = data['answer']
                     
                     # Convert numpy types to Python types
@@ -523,7 +524,7 @@ def execute_code(code: str, log_prefix: str, q_num: int):
                     logger.info(f"{log_prefix} Q{q_num} | Answer: {str(answer)[:200]} (type: {type(answer).__name__})")
                     return data, None
                 else:
-                    return None, "JSON missing required fields"
+                    return None, "JSON missing 'answer' field"
             else:
                 return None, "No JSON in output"
                 
@@ -544,10 +545,10 @@ def submit_answer(current_url: str, email: str, secret: str, answer_obj: dict,
     """Submit answer to server"""
     try:
         answer = answer_obj['answer']
-        submit_url = answer_obj['submit_url']
         
-        if not submit_url.startswith('http'):
-            submit_url = urllib.parse.urljoin(current_url, submit_url)
+        # Always use the correct submit endpoint - don't trust LLM's submit_url
+        parsed = urllib.parse.urlparse(current_url)
+        submit_url = f"{parsed.scheme}://{parsed.netloc}/submit"
         
         payload = {
             "email": email,
