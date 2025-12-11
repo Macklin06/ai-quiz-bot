@@ -446,20 +446,40 @@ def execute_code(code: str, log_prefix: str, q_num: int):
             'pd': __import__('pandas'),
         }
         
-        # Add optional imports
-        optional_imports = [
-            ('PIL', 'Image', lambda: __import__('PIL').Image),
-            ('bs4', 'BeautifulSoup', lambda: __import__('bs4').BeautifulSoup),
-            ('speech_recognition', 'sr', lambda: __import__('speech_recognition')),
-            ('pydub', 'AudioSegment', lambda: __import__('pydub').AudioSegment),
-            ('PyPDF2', 'PyPDF2', lambda: __import__('PyPDF2')),
-        ]
+        # Add PIL with proper structure so both 'from PIL import Image' and 'PIL.Image' work
+        try:
+            from PIL import Image
+            import PIL
+            safe_env['Image'] = Image
+            safe_env['PIL'] = PIL
+        except ImportError:
+            pass
         
-        for module_name, env_name, import_func in optional_imports:
-            try:
-                safe_env[env_name] = import_func()
-            except ImportError:
-                pass
+        # Add other optional imports
+        try:
+            from bs4 import BeautifulSoup
+            safe_env['BeautifulSoup'] = BeautifulSoup
+        except ImportError:
+            pass
+        
+        try:
+            import speech_recognition as sr
+            safe_env['sr'] = sr
+            safe_env['speech_recognition'] = sr
+        except ImportError:
+            pass
+        
+        try:
+            from pydub import AudioSegment
+            safe_env['AudioSegment'] = AudioSegment
+        except ImportError:
+            pass
+        
+        try:
+            import PyPDF2
+            safe_env['PyPDF2'] = PyPDF2
+        except ImportError:
+            pass
         
         exec(code, safe_env)
         
