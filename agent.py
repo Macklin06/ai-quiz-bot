@@ -56,27 +56,48 @@ def run_quiz_task(url: str, email: str, secret: str, request_id: int = None):
                     
                     logger.info(f"{log_prefix} Q{question_num} | Extracted {len(text)} chars")
                     
-                    answer_obj = None
+                    # Retry loop - handles both code errors AND wrong answers
                     last_error = None
+                    last_wrong_answer = None
+                    last_wrong_reason = None
+                    next_url = None
                     
                     for attempt in range(MAX_RETRIES):
                         answer_obj = solve_with_llm(
                             current_url, text, html, email, 
-                            log_prefix, question_num, attempt, last_error
+                            log_prefix, question_num, attempt, 
+                            last_error, last_wrong_answer, last_wrong_reason
                         )
-                        if answer_obj:
+                        
+                        if not answer_obj:
+                            logger.warning(f"{log_prefix} Q{question_num} | Code failed, retry {attempt+1}/{MAX_RETRIES}")
+                            time.sleep(1)
+                            continue
+                        
+                        # Submit and check result
+                        result = submit_answer(
+                            current_url, email, secret, 
+                            answer_obj, log_prefix, question_num
+                        )
+                        
+                        if result['correct']:
+                            next_url = result['next_url']
                             break
-                        logger.warning(f"{log_prefix} Q{question_num} | Retry {attempt+1}/{MAX_RETRIES}")
-                        time.sleep(1)
+                        else:
+                            # Wrong answer - retry with feedback
+                            last_wrong_answer = str(answer_obj.get('answer', ''))
+                            last_wrong_reason = result.get('reason', 'Unknown')
+                            logger.info(f"{log_prefix} Q{question_num} | Retrying with feedback: {last_wrong_reason}")
+                            
+                            # If we got a next_url even with wrong answer, use it after retries exhausted
+                            if result.get('next_url') and attempt == MAX_RETRIES - 1:
+                                next_url = result['next_url']
+                            
+                            time.sleep(0.5)
                     
-                    if not answer_obj:
+                    if not next_url:
                         logger.error(f"{log_prefix} Q{question_num} | Failed after {MAX_RETRIES} attempts")
-                        break
-                    
-                    next_url = submit_answer(
-                        current_url, email, secret, 
-                        answer_obj, log_prefix, question_num
-                    )
+                        # Try to continue if we have any next URL from wrong answers
                     
                     current_url = next_url
                     
@@ -94,7 +115,8 @@ def run_quiz_task(url: str, email: str, secret: str, request_id: int = None):
 
 
 def solve_with_llm(url: str, text: str, html: str, email: str, 
-                   log_prefix: str, q_num: int, attempt: int = 0, last_error: str = None):
+                   log_prefix: str, q_num: int, attempt: int = 0, 
+                   last_error: str = None, last_wrong_answer: str = None, last_wrong_reason: str = None):
     """Use LLM to solve the question"""
     try:
         # Extract base URL properly - scheme + domain only
@@ -106,7 +128,7 @@ def solve_with_llm(url: str, text: str, html: str, email: str,
         if last_error:
             error_context = f"""
 
-⚠️ PREVIOUS ATTEMPT FAILED WITH ERROR:
+⚠️ PREVIOUS ATTEMPT FAILED WITH CODE ERROR:
 {last_error}
 
 FIX THE ERROR! Common solutions:
@@ -115,6 +137,21 @@ FIX THE ERROR! Common solutions:
 - 404: Check the file URL path - use urllib.parse.urljoin(base_url, '/correct/path')
 - Import errors: Make sure imports are at the top of the code
 - Type errors: Convert numpy/pandas types with int(), float(), or .item()
+"""
+        
+        if last_wrong_answer and last_wrong_reason:
+            error_context += f"""
+
+🚫 PREVIOUS ANSWER WAS WRONG!
+Your answer: {last_wrong_answer}
+Server feedback: {last_wrong_reason}
+
+TRY A DIFFERENT APPROACH! Common fixes based on feedback:
+- "Link should be /path": Return ONLY the relative path, not full URL
+- "Normalized JSON does not match": Check column names, data types, date formats, sorting
+- "Total line items": Parse the PDF table correctly, multiply qty × price for each row
+- Date format: Use ISO format YYYY-MM-DDTHH:MM:SS
+- For paths: Extract just the path portion using urlparse(url).path
 """
 
         prompt = f"""Generate Python code to solve this quiz question.
@@ -421,11 +458,12 @@ RULES:
 1. Generate ONLY Python code - no explanations
 2. Print answer as JSON: print(json.dumps({"answer": result}))
 3. NEVER submit via HTTP POST - just calculate and print
-4. Use urllib.parse.urljoin(base_url, '/path') for file URLs
+4. Use urllib.parse.urljoin(base_url, '/path') for FETCHING file URLs
 5. Strip whitespace from ALL data
 6. For audio: output lowercase text with spaces (e.g., "hushed parrot 219")
-7. For CSV: clean columns AND values, convert types properly
-8. Handle all exceptions gracefully"""
+7. For CSV: clean columns AND values, convert types properly, sort by id
+8. Handle all exceptions gracefully
+9. ⚠️ CRITICAL: If the question asks for a file path/link, return ONLY the path like "/project2/file.md" - NOT the full URL!"""
                 },
                 {"role": "user", "content": prompt}
             ],
@@ -570,6 +608,15 @@ def execute_code(code: str, log_prefix: str, q_num: int):
                     elif hasattr(answer, 'tolist'):
                         answer = answer.tolist()
                     
+                    # POST-PROCESSING: Convert full URLs to relative paths
+                    # This fixes cases where LLM returns https://domain.com/path instead of /path
+                    if isinstance(answer, str) and answer.startswith('http'):
+                        parsed = urllib.parse.urlparse(answer)
+                        # Only convert if it looks like a file path (has extension or ends with /)
+                        if '.' in parsed.path.split('/')[-1] or parsed.path.endswith('/'):
+                            answer = parsed.path
+                            logger.info(f"{log_prefix} Q{q_num} | Converted URL to path: {answer}")
+                    
                     data['answer'] = answer
                     logger.info(f"{log_prefix} Q{q_num} | Answer: {str(answer)[:200]} (type: {type(answer).__name__})")
                     return data, None
@@ -592,7 +639,7 @@ def execute_code(code: str, log_prefix: str, q_num: int):
 
 def submit_answer(current_url: str, email: str, secret: str, answer_obj: dict, 
                  log_prefix: str, q_num: int):
-    """Submit answer to server"""
+    """Submit answer to server, returns dict with correct, reason, next_url"""
     try:
         answer = answer_obj['answer']
         
@@ -613,27 +660,29 @@ def submit_answer(current_url: str, email: str, secret: str, answer_obj: dict,
         
         if resp.status_code != 200:
             logger.error(f"{log_prefix} Q{q_num} | HTTP {resp.status_code}")
-            return None
+            return {'correct': False, 'reason': f'HTTP {resp.status_code}', 'next_url': None}
         
         try:
             data = resp.json()
             
-            if data.get('correct'):
+            is_correct = data.get('correct', False)
+            reason = data.get('reason', '')
+            next_url = data.get('url')
+            
+            if is_correct:
                 logger.info(f"{log_prefix} Q{q_num} | ✓ CORRECT!")
             else:
-                reason = data.get('reason', '')
                 logger.warning(f"{log_prefix} Q{q_num} | ✗ WRONG: {reason}")
             
-            next_url = data.get('url')
             if next_url:
                 logger.info(f"{log_prefix} Q{q_num} | Next URL received")
             
-            return next_url
+            return {'correct': is_correct, 'reason': reason, 'next_url': next_url}
             
         except json.JSONDecodeError:
             logger.error(f"{log_prefix} Q{q_num} | Failed to parse response")
-            return None
+            return {'correct': False, 'reason': 'JSON parse error', 'next_url': None}
             
     except Exception as e:
         logger.error(f"{log_prefix} Q{q_num} | Submit error: {e}")
-        return None
+        return {'correct': False, 'reason': str(e), 'next_url': None}
