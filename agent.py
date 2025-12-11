@@ -271,8 +271,10 @@ df = df.sort_values('id').reset_index(drop=True)
 if set(['id', 'name', 'joined', 'value']).issubset(set(df.columns)):
     df = df[['id', 'name', 'joined', 'value']]
 
-# 9. Convert to list of dicts
-answer = df.to_dict(orient='records')
+# 9. Convert to list of dicts, then to JSON STRING
+records = df.to_dict(orient='records')
+# IMPORTANT: The answer must be a JSON STRING, not a Python list
+answer = json.dumps(records)
 print(json.dumps({{"answer": answer}}))
 ```
 
