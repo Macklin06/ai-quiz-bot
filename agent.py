@@ -187,14 +187,14 @@ Generate ONLY Python code. NO explanations. Code must PRINT the JSON result."""
         
         logger.info(f"{log_prefix} Q{q_num} | Code generated ({len(generated_code)} chars)")
         
-        # Log the full generated code for debugging
-        logger.debug(f"{log_prefix} Generated code:\n{'-'*50}\n{generated_code}\n{'-'*50}")
+        # ALWAYS log the full generated code for debugging
+        logger.info(f"{log_prefix} Generated code:\n{'-'*50}\n{generated_code}\n{'-'*50}")
         
         # Check if code has print statement
-        if 'print(' not in generated_code:
+        if 'print(' not in generated_code.lower():
             logger.warning(f"{log_prefix} Q{q_num} | Code missing print statement! Adding fallback...")
             # Add print statement at the end
-            generated_code += '\nprint(json.dumps(result))'
+            generated_code += '\nimport json\nprint(json.dumps(result))'
         
         # Execute code safely
         result = execute_code(generated_code, log_prefix, q_num)
@@ -211,13 +211,15 @@ def execute_code(code: str, log_prefix: str, q_num: int):
     
     Returns: dict with answer data or None
     """
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    
     try:
         # Redirect stdout AND stderr
-        old_stdout = sys.stdout
-        old_stderr = sys.stderr
         redirected = io.StringIO()
+        error_stream = io.StringIO()
         sys.stdout = redirected
-        sys.stderr = redirected
+        sys.stderr = error_stream
         
         # Create safe globals
         safe_globals = {
@@ -232,28 +234,42 @@ def execute_code(code: str, log_prefix: str, q_num: int):
             'base64': __import__('base64'),
             'BeautifulSoup': __import__('bs4').BeautifulSoup,
             're': __import__('re'),
+            'hashlib': __import__('hashlib'),
         }
         
         # Execute with timeout
+        exec_error = None
         try:
             exec(code, safe_globals)
-        except Exception as exec_error:
-            logger.error(f"{log_prefix} Q{q_num} | Execution error in code: {exec_error}")
-            # Continue to check output anyway
+        except Exception as e:
+            exec_error = e
+            logger.error(f"{log_prefix} Q{q_num} | Code execution exception: {e}")
         
         # Restore stdout/stderr
         sys.stdout = old_stdout
         sys.stderr = old_stderr
+        
         output = redirected.getvalue()
+        errors = error_stream.getvalue()
+        
+        # Log errors if any
+        if errors:
+            logger.error(f"{log_prefix} Q{q_num} | Stderr output:\n{errors}")
+        
+        if exec_error:
+            logger.error(f"{log_prefix} Q{q_num} | Exception during execution: {exec_error}")
+            # Try to provide more context
+            import traceback
+            logger.error(f"{log_prefix} Q{q_num} | Traceback:\n{traceback.format_exc()}")
         
         logger.info(f"{log_prefix} Q{q_num} | Code executed, output length: {len(output)}")
         
         # Log output for debugging
         if output:
-            logger.debug(f"{log_prefix} Raw output:\n{output}")
+            logger.info(f"{log_prefix} Stdout output:\n{output}")
         else:
             logger.warning(f"{log_prefix} Q{q_num} | No output produced!")
-            logger.debug(f"{log_prefix} Code was:\n{code}")
+            logger.error(f"{log_prefix} Code that failed:\n{code}")
         
         # Parse JSON from output
         json_start = output.find("{")
@@ -279,7 +295,7 @@ def execute_code(code: str, log_prefix: str, q_num: int):
     except Exception as e:
         sys.stdout = old_stdout
         sys.stderr = old_stderr
-        logger.error(f"{log_prefix} Q{q_num} | Execution error: {e}", exc_info=True)
+        logger.error(f"{log_prefix} Q{q_num} | Unexpected error: {e}", exc_info=True)
         return None
 
 
