@@ -25,7 +25,7 @@ def run_quiz_task(url: str, email: str, secret: str, request_id: int = None):
     """Main quiz executor - handles entire quiz chain"""
     log_prefix = f"[{request_id}]" if request_id else ""
     start_time = time.time()
-    max_duration = 170
+    max_duration = 280  # Increased timeout for more questions
     
     logger.info(f"{log_prefix} Starting quiz at: {url}")
     
@@ -152,6 +152,9 @@ TRY A DIFFERENT APPROACH! Common fixes based on feedback:
 - "Total line items": Parse the PDF table correctly, multiply qty × price for each row
 - Date format: Use ISO format YYYY-MM-DDTHH:MM:SS
 - For paths: Extract just the path portion using urlparse(url).path
+- "positive integers": Values like 0 are NOT positive! Check min/max constraints in the JSON
+- "shards and replicas": Check min_replicas and max_replicas constraints - replicas cannot be 0
+- "option B/C/etc": The answer should be just the letter like "B", not the full text
 """
 
         prompt = f"""Generate Python code to solve this quiz question.
