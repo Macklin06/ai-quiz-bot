@@ -106,14 +106,15 @@ def solve_with_llm(url: str, text: str, html: str, email: str,
         if last_error:
             error_context = f"""
 
-⚠️ PREVIOUS ATTEMPT FAILED:
+⚠️ PREVIOUS ATTEMPT FAILED WITH ERROR:
 {last_error}
 
-FIX THE ERROR! Common fixes:
-- Audio wrong? Try different case/formatting variations
-- CSV wrong? Check column order, data types, whitespace
-- 404 errors? Use correct base_url construction
-- Always strip() ALL data and check types
+FIX THE ERROR! Common solutions:
+- Audio: Make sure to use .lower() on the transcribed text, keep spaces between words
+- CSV: Strip whitespace from column names AND cell values
+- 404: Check the file URL path - use urllib.parse.urljoin(base_url, '/correct/path')
+- Import errors: Make sure imports are at the top of the code
+- Type errors: Convert numpy/pandas types with int(), float(), or .item()
 """
 
         prompt = f"""Generate Python code to solve this quiz question.
@@ -143,7 +144,7 @@ CRITICAL URL CONSTRUCTION RULES:
 
 CODE TEMPLATE EXAMPLES:
 
-**1. AUDIO TRANSCRIPTION (Multiple Formats):**
+**1. AUDIO TRANSCRIPTION (Secret Passphrase):**
 ```python
 import json
 import speech_recognition as sr
@@ -152,36 +153,26 @@ import urllib.request
 import urllib.parse
 
 base_url = '{base_url}'
-file_url = urllib.parse.urljoin(base_url, '/project2/audio-passphrase.opus')
-urllib.request.urlretrieve(file_url, "audio.opus")
+# Look for audio file link in the page - common extensions: .mp3, .wav, .opus, .ogg
+file_url = urllib.parse.urljoin(base_url, '/project2/audio-passphrase.mp3')
+urllib.request.urlretrieve(file_url, "audio_file")
 
-audio = AudioSegment.from_file("audio.opus")
+# Convert to WAV for speech recognition
+audio = AudioSegment.from_file("audio_file")
 audio.export("audio.wav", format="wav")
 
 recognizer = sr.Recognizer()
 with sr.AudioFile("audio.wav") as source:
-    recognizer.adjust_for_ambient_noise(source, duration=0.5)
+    recognizer.adjust_for_ambient_noise(source, duration=0.3)
     audio_data = recognizer.record(source)
+    # Use Google's speech recognition
     text = recognizer.recognize_google(audio_data)
 
-# Try multiple variations on different attempts
-attempt = {attempt + 1}
-text = text.strip()
+# Clean up the transcription - passphrase is usually lowercase words + number
+# Format: "word word number" like "hushed parrot 219"
+answer = text.strip().lower()
 
-# Try different formatting
-variations = [
-    text,                           # As-is
-    text.lower(),                   # lowercase
-    text.title(),                   # Title Case
-    text.upper(),                   # UPPERCASE
-    text.replace(' ', ''),          # no spaces
-    text.replace(' ', '-'),         # dashes
-]
-
-# Use modulo to cycle through variations
-answer = variations[attempt % len(variations)]
-
-print(json.dumps({{"answer": answer, "submit_url": "https://tds-llm-analysis.s-anand.net/submit"}}))
+print(json.dumps({{"answer": answer}}))
 ```
 
 **2. CSV PROCESSING (Clean & Robust):**
@@ -371,12 +362,17 @@ Generate ONLY Python code, no markdown blocks."""
             messages=[
                 {
                     "role": "system", 
-                    "content": """You are a Python code generator. Rules:
-1. NEVER make HTTP POST requests to submit answers
-2. Only calculate and print JSON
-3. Use urllib.parse.urljoin(base_url, '/path') for all file URLs
-4. Strip whitespace from all data
-5. Try multiple format variations for ambiguous data (audio, text)"""
+                    "content": """You are a Python code generator that solves quiz questions.
+
+RULES:
+1. Generate ONLY Python code - no explanations
+2. Print answer as JSON: print(json.dumps({"answer": result}))
+3. NEVER submit via HTTP POST - just calculate and print
+4. Use urllib.parse.urljoin(base_url, '/path') for file URLs
+5. Strip whitespace from ALL data
+6. For audio: output lowercase text with spaces (e.g., "hushed parrot 219")
+7. For CSV: clean columns AND values, convert types properly
+8. Handle all exceptions gracefully"""
                 },
                 {"role": "user", "content": prompt}
             ],
