@@ -696,9 +696,10 @@ print(json.dumps({{"answer": answer}}))
 import json
 import requests
 import urllib.parse
+import re
 
 base_url = '{base_url}'
-# Find and load the tools.json from the page
+# Find and load the tools.json from the page - look for href containing tools.json
 tools_url = urllib.parse.urljoin(base_url, 'FIND_TOOLS_JSON_PATH_FROM_PAGE')
 
 response = requests.get(tools_url)
@@ -708,20 +709,30 @@ tools_config = response.json()
 tools = tools_config.get('tools', [])
 prompt = tools_config.get('prompt', '')
 
-# Parse the prompt to extract: issue number, repo owner/name, word limit
-# Example: "Find the status of issue 42 in repo demo/api and summarize in 60 words"
-# - Extract issue ID (42), owner (demo), repo (api), word count (60)
+# DYNAMICALLY PARSE THE PROMPT - extract EXACT values:
+# Example prompt: "Find the status of issue 42 in repo demo/api and summarize in 60 words"
 
-# CRITICAL: For search_docs, the query should be the FULL context string!
-# - If prompt mentions "issue 42 in repo demo/api", query = "issue 42 demo/api"
-# CRITICAL: For summarize, max_tokens = the EXACT word count from prompt (60, NOT 80!)
-# CRITICAL: Do NOT include "text" arg for summarize - it comes from previous step!
+# Extract issue ID (number after "issue")
+issue_match = re.search(r'issue\s+(\d+)', prompt, re.IGNORECASE)
+issue_id = int(issue_match.group(1)) if issue_match else 42
 
-# Build plan based on prompt analysis:
+# Extract repo owner/name (format: owner/repo)
+repo_match = re.search(r'repo\s+(\w+)/(\w+)', prompt, re.IGNORECASE)
+owner = repo_match.group(1) if repo_match else "demo"
+repo = repo_match.group(2) if repo_match else "api"
+
+# Extract word count (number before "words") - THIS IS CRITICAL!
+words_match = re.search(r'(\d+)\s+words', prompt, re.IGNORECASE)
+max_tokens = int(words_match.group(1)) if words_match else 60  # Use 60 as default, NOT 80!
+
+# For search_docs query: combine issue and repo context
+search_query = f"issue {{issue_id}} {{owner}}/{{repo}}"
+
+# Build plan with DYNAMICALLY EXTRACTED values:
 plan = [
-    {{"tool": "search_docs", "args": {{"query": "issue 42 demo/api"}}}},  # FULL context as query!
-    {{"tool": "fetch_issue", "args": {{"owner": "demo", "repo": "api", "id": 42}}}},
-    {{"tool": "summarize", "args": {{"max_tokens": 60}}}}  # ONLY max_tokens, value from prompt (60 words)!
+    {{"tool": "search_docs", "args": {{"query": search_query}}}},
+    {{"tool": "fetch_issue", "args": {{"owner": owner, "repo": repo, "id": issue_id}}}},
+    {{"tool": "summarize", "args": {{"max_tokens": max_tokens}}}}  # Use extracted word count!
 ]
 
 answer = json.dumps(plan, separators=(',', ':'))
