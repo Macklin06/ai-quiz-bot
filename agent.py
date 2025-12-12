@@ -32,10 +32,11 @@ elif API_PROVIDER == "openrouter":
     # Free models: mistralai/devstral-2512:free, amazon/nova-2-lite-v1:free
     SOLVER_MODEL = os.getenv("SOLVER_MODEL", "mistralai/devstral-2512:free")
 else:
-    # Gemini API (free tier: 15 RPM, 1M tokens/day)
+    # Gemini API - FREE tier with generous limits!
+    # gemini-2.0-flash has HIGHER free tier limits than 2.5-flash!
     import google.generativeai as genai
     genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-    SOLVER_MODEL = os.getenv("SOLVER_MODEL", "gemini-2.0-flash")
+    SOLVER_MODEL = os.getenv("SOLVER_MODEL", "gemini-2.0-flash")  # Higher free tier limits!
 
 MAX_RETRIES = 3
 RETRY_DELAY = 0.5
