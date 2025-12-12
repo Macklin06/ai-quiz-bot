@@ -8,19 +8,71 @@ import time
 import logging
 from datetime import datetime
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
-client = OpenAI(
-    api_key=os.getenv("AI_PIPE_KEY"),
-    base_url="https://aipipe.org/openai/v1"
-)
+# API Configuration - supports both Gemini (free) and OpenAI
+# API Configuration - supports Gemini (free), OpenAI, and OpenRouter (free)
+API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()  # "gemini", "openai", or "openrouter"
 
-# Use gpt-4o for better reasoning on complex questions, can override with env var
-SOLVER_MODEL = os.getenv("SOLVER_MODEL", "gpt-4o")
+if API_PROVIDER == "openai":
+    from openai import OpenAI
+    client = OpenAI(
+        api_key=os.getenv("AI_PIPE_KEY"),
+        base_url="https://aipipe.org/openai/v1"
+    )
+    SOLVER_MODEL = os.getenv("SOLVER_MODEL", "gpt-4o-mini")
+elif API_PROVIDER == "openrouter":
+    # OpenRouter - FREE models available!
+    from openai import OpenAI
+    client = OpenAI(
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+        base_url="https://openrouter.ai/api/v1"
+    )
+    # Free models: mistralai/devstral-2512:free, amazon/nova-2-lite-v1:free
+    SOLVER_MODEL = os.getenv("SOLVER_MODEL", "mistralai/devstral-2512:free")
+else:
+    # Gemini API (free tier: 15 RPM, 1M tokens/day)
+    import google.generativeai as genai
+    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+    SOLVER_MODEL = os.getenv("SOLVER_MODEL", "gemini-2.0-flash")
+
 MAX_RETRIES = 3
 RETRY_DELAY = 0.5
+
+
+def call_llm(messages: list) -> str:
+    """Unified LLM call - works with Gemini, OpenAI, and OpenRouter"""
+    if API_PROVIDER in ("openai", "openrouter"):
+        response = client.chat.completions.create(
+            model=SOLVER_MODEL,
+            messages=messages,
+            temperature=0.1,
+            max_tokens=4096
+        )
+        return response.choices[0].message.content
+    else:
+        # Gemini API
+        model = genai.GenerativeModel(SOLVER_MODEL)
+        # Convert OpenAI format to Gemini format
+        prompt_parts = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "system":
+                prompt_parts.append(f"Instructions: {content}\n\n")
+            else:
+                prompt_parts.append(content)
+        
+        full_prompt = "\n".join(prompt_parts)
+        response = model.generate_content(
+            full_prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.1,
+                max_output_tokens=4096
+            )
+        )
+        return response.text
 
 
 def run_quiz_task(url: str, email: str, secret: str, request_id: int = None):
@@ -134,8 +186,10 @@ def solve_with_llm(url: str, text: str, html: str, email: str,
 {last_error}
 
 FIX THE ERROR! Common solutions:
+- "Column not found": Print df.columns first! The column might be named differently (e.g., 'amount' not 'total')
+- For aggregation: COMPUTE totals by groupby().sum() - don't look for existing 'total' column!
 - Audio: Make sure to use .lower() on the transcribed text, keep spaces between words
-- CSV: Strip whitespace from column names AND cell values
+- CSV: Strip whitespace from column names with df.columns = df.columns.str.strip()
 - 404: Check the file URL path - use urllib.parse.urljoin(base_url, '/correct/path')
 - Import errors: Make sure imports are at the top of the code
 - Type errors: Convert numpy/pandas types with int(), float(), or .item()
@@ -272,10 +326,11 @@ if 'value' in df.columns:
     df['value'] = pd.to_numeric(df['value'], errors='coerce').fillna(0).astype(int)
 
 # 6. Parse and normalize dates to ISO format (YYYY-MM-DD only, no time!)
+# Use dayfirst=True for formats like 02/01/24 (interpret as Jan 2, not Feb 1)
 if 'joined' in df.columns:
     def normalize_date(x):
         try:
-            dt = dateutil.parser.parse(str(x).strip())
+            dt = dateutil.parser.parse(str(x).strip(), dayfirst=True)
             return dt.strftime('%Y-%m-%d')  # Date only, NO time component!
         except:
             return str(x).strip()
@@ -540,6 +595,94 @@ answer = json.dumps({{"shards": best_shards, "replicas": best_replicas}})
 print(json.dumps({{"answer": answer}}))
 ```
 
+**11. ORDERS/AGGREGATION (group by customer, compute totals):**
+```python
+import json
+import requests
+import pandas as pd
+import urllib.parse
+
+base_url = '{base_url}'
+# Find the CSV path from page content
+csv_url = urllib.parse.urljoin(base_url, 'FIND_CSV_PATH_FROM_PAGE')  # e.g., /project2/orders.csv
+
+response = requests.get(csv_url)
+df = pd.read_csv(pd.io.common.StringIO(response.text))
+
+# Clean column names (strip whitespace, lowercase)
+df.columns = df.columns.str.strip().str.lower()
+
+# Print columns to debug
+print(f"Columns: {{list(df.columns)}}", file=__import__('sys').stderr)
+
+# For orders: group by customer_id, sum the amount column
+# First sort by order_date to ensure correct order
+if 'order_date' in df.columns:
+    df = df.sort_values('order_date')
+
+# Find the numeric column to sum (might be 'amount', 'value', 'total', 'price', etc.)
+numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
+amount_col = None
+for col in ['amount', 'value', 'total', 'price', 'quantity']:
+    if col in df.columns:
+        amount_col = col
+        break
+if not amount_col and numeric_cols:
+    amount_col = numeric_cols[-1]  # Use last numeric column
+
+# Group and sum
+grouped = df.groupby('customer_id')[amount_col].sum().reset_index()
+grouped.columns = ['customer_id', 'total']
+
+# Sort by total descending and take top 3
+top3 = grouped.nlargest(3, 'total')
+
+# Convert to list of dicts with proper types
+result = []
+for _, row in top3.iterrows():
+    result.append({{"customer_id": str(row['customer_id']), "total": int(row['total'])}})
+
+answer = json.dumps(result, separators=(',', ':'))
+print(json.dumps({{"answer": answer}}))
+```
+
+**12. TOOL CALLING PLANS (create ordered tool call JSON):**
+```python
+import json
+import requests
+import urllib.parse
+
+base_url = '{base_url}'
+# Find and load the tools.json from the page
+tools_url = urllib.parse.urljoin(base_url, 'FIND_TOOLS_JSON_PATH_FROM_PAGE')
+
+response = requests.get(tools_url)
+tools_config = response.json()
+
+# Read the tools and their EXACT argument names from tools.json
+tools = tools_config.get('tools', [])
+prompt = tools_config.get('prompt', '')
+
+# Parse the prompt to extract: issue number, repo owner/name, word limit
+# Example: "Find the status of issue 42 in repo demo/api and summarize in 60 words"
+# - Extract issue ID (42), owner (demo), repo (api), word count (60)
+
+# CRITICAL: For search_docs, the query should be the FULL context string!
+# - If prompt mentions "issue 42 in repo demo/api", query = "issue 42 demo/api"
+# CRITICAL: For summarize, max_tokens = the EXACT word count from prompt (60, NOT 80!)
+# CRITICAL: Do NOT include "text" arg for summarize - it comes from previous step!
+
+# Build plan based on prompt analysis:
+plan = [
+    {{"tool": "search_docs", "args": {{"query": "issue 42 demo/api"}}}},  # FULL context as query!
+    {{"tool": "fetch_issue", "args": {{"owner": "demo", "repo": "api", "id": 42}}}},
+    {{"tool": "summarize", "args": {{"max_tokens": 60}}}}  # ONLY max_tokens, value from prompt (60 words)!
+]
+
+answer = json.dumps(plan, separators=(',', ':'))
+print(json.dumps({{"answer": answer}}))
+```
+
 RULES:
 1. ALWAYS use urllib.parse.urljoin(base_url, '/path') for FETCHING files
 2. ALWAYS strip() whitespace from all text data
@@ -548,41 +691,40 @@ RULES:
    - Use urlparse(url).path to extract just the path from a full URL
 5. Only print JSON with answer, NEVER submit via HTTP
 6. For CSV: Sort by 'id' ascending, dates in ISO format YYYY-MM-DD (no time!)
+7. ⚠️ ALWAYS check what columns exist in data before accessing them!
+8. ⚠️ For aggregation: compute totals by SUMMING value columns, don't look for pre-existing 'total' column!
+9. For tool calling plans: Read the tools.json to get the EXACT argument names required by each tool!
 
 Generate ONLY Python code, no markdown blocks."""
 
         logger.info(f"{log_prefix} Q{q_num} | Calling {SOLVER_MODEL} (attempt {attempt+1})...")
         
-        response = client.chat.completions.create(
-            model=SOLVER_MODEL,
-            messages=[
-                {
-                    "role": "system", 
-                    "content": """You are a Python code generator that solves quiz questions.
+        messages = [
+            {
+                "role": "system", 
+                "content": """You are an expert Python code generator that solves quiz questions DEFENSIVELY.
 
-RULES:
-1. Generate ONLY Python code - no explanations
+CRITICAL RULES:
+1. Generate ONLY Python code - no explanations, no markdown
 2. Print answer as JSON: print(json.dumps({"answer": result}))
 3. NEVER submit via HTTP POST - just calculate and print
-4. Use urllib.parse.urljoin(base_url, '/path') for FETCHING file URLs
-5. ⚠️ CRITICAL: Find file paths (.mp3, .csv, .pdf, .zip, .json) from the PAGE TEXT or HTML - NEVER hardcode paths!
-6. Strip whitespace from ALL data
-7. For audio: output lowercase text with spaces
-8. For CSV: clean columns AND values, convert types properly, sort by id if present, output COMPACT JSON (no spaces)
-9. Handle all exceptions gracefully
-10. ⚠️ For file path/link answers: return ONLY the relative path - NOT the full URL!
-11. For optimization (shards/replicas): find JSON URL from page, parse constraints, find valid combo within memory budget
-12. For chart type questions (A/B/C): return just the letter
-13. NEVER return empty string - always extract an answer from the question
-14. For JSON string answers: use json.dumps(data, separators=(',',':')) for compact output"""
-                },
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=8000,
-            temperature=0
-        )
+4. ⚠️ Find file paths from PAGE TEXT - look for links like .mp3, .csv, .pdf, .zip, .json
+5. Strip whitespace from ALL data (column names, cell values)
+6. For audio: output lowercase text with spaces
+7. For CSV normalization: clean columns, convert types, sort by id, use COMPACT JSON (separators=(',',':'))
+8. ⚠️ ALWAYS print df.columns to stderr BEFORE accessing columns to debug!
+9. ⚠️ For aggregation: COMPUTE totals by SUMMING amount/value columns - don't look for 'total' column!
+10. For path/link answers: return ONLY the relative path like "/project2/file.md"
+11. For optimization: parse constraints from JSON, find valid shards/replicas within memory budget
+12. For A/B/C questions: return just the single letter
+13. NEVER return empty string
+14. For JSON answers: use json.dumps(data, separators=(',',':'))
+15. ⚠️ BE DEFENSIVE: Check if columns exist before accessing them!"""
+            },
+            {"role": "user", "content": prompt}
+        ]
         
-        code = response.choices[0].message.content.strip()
+        code = call_llm(messages).strip()
         
         # Clean markdown
         if "```python" in code:
