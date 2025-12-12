@@ -17,7 +17,8 @@ client = OpenAI(
     base_url="https://aipipe.org/openai/v1"
 )
 
-SOLVER_MODEL = "gpt-4o-mini"
+# Use gpt-4o for better reasoning on complex questions, can override with env var
+SOLVER_MODEL = os.getenv("SOLVER_MODEL", "gpt-4o")
 MAX_RETRIES = 3
 RETRY_DELAY = 0.5
 
@@ -287,10 +288,10 @@ df = df.sort_values('id').reset_index(drop=True)
 if set(['id', 'name', 'joined', 'value']).issubset(set(df.columns)):
     df = df[['id', 'name', 'joined', 'value']]
 
-# 9. Convert to list of dicts, then to JSON STRING
+# 9. Convert to list of dicts, then to COMPACT JSON STRING (no spaces!)
 records = df.to_dict(orient='records')
-# IMPORTANT: Answer must be a JSON STRING, not a Python list!
-answer = json.dumps(records)
+# IMPORTANT: Answer must be a COMPACT JSON STRING with no spaces!
+answer = json.dumps(records, separators=(',', ':'))
 print(json.dumps({{"answer": answer}}))
 ```
 
@@ -489,6 +490,56 @@ answer = yaml_answer.strip()
 print(json.dumps({{"answer": answer}}))
 ```
 
+**10. SHARDS/REPLICAS OPTIMIZATION (find JSON path from page content):**
+```python
+import json
+import requests
+import urllib.parse
+import math
+import re
+
+base_url = '{base_url}'
+# Find the JSON file path from page content (look for .json links)
+# Example: if page mentions /project2/shards.json, use that path
+json_url = urllib.parse.urljoin(base_url, 'FIND_JSON_PATH_FROM_PAGE')  # e.g., /project2/shards.json
+
+response = requests.get(json_url)
+config = response.json()
+
+# Extract constraints
+dataset = config['dataset']
+max_docs_per_shard = config['max_docs_per_shard']
+max_shards = config['max_shards']
+min_replicas = config['min_replicas']
+max_replicas = config['max_replicas']
+memory_per_shard = config['memory_per_shard']
+memory_budget = config['memory_budget']
+
+# Calculate minimum shards needed
+min_shards = math.ceil(dataset / max_docs_per_shard)
+
+# Find valid combination: minimize memory usage while satisfying all constraints
+best_shards = None
+best_replicas = None
+
+for shards in range(min_shards, max_shards + 1):
+    for replicas in range(min_replicas, max_replicas + 1):
+        # Check if docs per shard constraint is satisfied
+        docs_per_shard = dataset / shards
+        if docs_per_shard > max_docs_per_shard:
+            continue
+        # Check memory constraint: shards * replicas * memory_per_shard <= memory_budget
+        total_memory = shards * replicas * memory_per_shard
+        if total_memory <= memory_budget:
+            if best_shards is None or (shards * replicas < best_shards * best_replicas):
+                best_shards = shards
+                best_replicas = replicas
+
+# Return as JSON STRING
+answer = json.dumps({{"shards": best_shards, "replicas": best_replicas}})
+print(json.dumps({{"answer": answer}}))
+```
+
 RULES:
 1. ALWAYS use urllib.parse.urljoin(base_url, '/path') for FETCHING files
 2. ALWAYS strip() whitespace from all text data
@@ -514,15 +565,16 @@ RULES:
 2. Print answer as JSON: print(json.dumps({"answer": result}))
 3. NEVER submit via HTTP POST - just calculate and print
 4. Use urllib.parse.urljoin(base_url, '/path') for FETCHING file URLs
-5. Find file paths (like .mp3, .csv, .pdf, .zip, .json) from the PAGE TEXT or HTML provided
+5. ⚠️ CRITICAL: Find file paths (.mp3, .csv, .pdf, .zip, .json) from the PAGE TEXT or HTML - NEVER hardcode paths!
 6. Strip whitespace from ALL data
 7. For audio: output lowercase text with spaces
-8. For CSV: clean columns AND values, convert types properly, sort by id if present
+8. For CSV: clean columns AND values, convert types properly, sort by id if present, output COMPACT JSON (no spaces)
 9. Handle all exceptions gracefully
-10. ⚠️ CRITICAL: If the question asks for a file path/link, return ONLY the relative path - NOT the full URL!
-11. For optimization questions (shards/replicas): respect min_replicas constraint (replicas cannot be 0 if min_replicas > 0)
-12. For chart type questions asking for A/B/C: return just the letter (e.g. "B" for stacked area)
-13. NEVER return empty string - always extract an answer from the question"""
+10. ⚠️ For file path/link answers: return ONLY the relative path - NOT the full URL!
+11. For optimization (shards/replicas): find JSON URL from page, parse constraints, find valid combo within memory budget
+12. For chart type questions (A/B/C): return just the letter
+13. NEVER return empty string - always extract an answer from the question
+14. For JSON string answers: use json.dumps(data, separators=(',',':')) for compact output"""
                 },
                 {"role": "user", "content": prompt}
             ],
