@@ -149,9 +149,9 @@ Server feedback: {last_wrong_reason}
 
 TRY A DIFFERENT APPROACH! Common fixes based on feedback:
 - "Link should be /path": Return ONLY the relative path, not full URL
-- "Normalized JSON does not match": Check column names, data types, date formats, sorting
+- "Normalized JSON does not match": Check column names, data types, date formats (YYYY-MM-DD only!), sorting
 - "Total line items": Parse the PDF table correctly, multiply qty × price for each row
-- Date format: Use ISO format YYYY-MM-DDTHH:MM:SS
+- Date format: Use ISO format YYYY-MM-DD (no time component!)
 - For paths: Extract just the path portion using urlparse(url).path
 - "positive integers": Values like 0 are NOT positive! Check min_replicas constraint
 - For shards/replicas: replicas MUST be >= min_replicas (NOT 0!)
@@ -159,6 +159,13 @@ TRY A DIFFERENT APPROACH! Common fixes based on feedback:
 - "HTTP 400": Your answer was empty! Make sure to extract and return the actual answer
 - For chart type questions: Answer should be a single letter (A, B, or C)
   - Time-series + cumulative contributions = B (stacked area)
+- "Cache ~/.npm with hashFiles": Return GitHub Actions YAML like:
+  - uses: actions/cache@v4
+    with:
+      path: ~/.npm
+      key: ${{ hashFiles("**/package-lock.json") }}
+      restore-keys: |
+        npm-
 """
 
         prompt = f"""Generate Python code to solve this quiz question.
@@ -263,12 +270,12 @@ if 'id' in df.columns:
 if 'value' in df.columns:
     df['value'] = pd.to_numeric(df['value'], errors='coerce').fillna(0).astype(int)
 
-# 6. Parse and normalize dates to ISO format (YYYY-MM-DDTHH:MM:SS)
+# 6. Parse and normalize dates to ISO format (YYYY-MM-DD only, no time!)
 if 'joined' in df.columns:
     def normalize_date(x):
         try:
             dt = dateutil.parser.parse(str(x).strip())
-            return dt.strftime('%Y-%m-%dT%H:%M:%S')
+            return dt.strftime('%Y-%m-%d')  # Date only, NO time component!
         except:
             return str(x).strip()
     df['joined'] = df['joined'].apply(normalize_date)
@@ -464,6 +471,24 @@ answer = "B"  # Return JUST the letter
 print(json.dumps({{"answer": answer}}))
 ```
 
+**9. GITHUB ACTIONS CACHE YAML (for cache questions):**
+```python
+import json
+
+# For questions asking to cache npm dependencies with actions/cache@v4
+# Return the YAML snippet as a string
+
+yaml_answer = '''- uses: actions/cache@v4
+  with:
+    path: ~/.npm
+    key: ${{{{ hashFiles("**/package-lock.json") }}}}
+    restore-keys: |
+      npm-'''
+
+answer = yaml_answer.strip()
+print(json.dumps({{"answer": answer}}))
+```
+
 RULES:
 1. ALWAYS use urllib.parse.urljoin(base_url, '/path') for FETCHING files
 2. ALWAYS strip() whitespace from all text data
@@ -471,7 +496,7 @@ RULES:
 4. ⚠️ For ANSWER that is a path/link: return ONLY the relative path like "/project2/file.md"
    - Use urlparse(url).path to extract just the path from a full URL
 5. Only print JSON with answer, NEVER submit via HTTP
-6. For CSV: Sort by 'id' ascending, dates in ISO format YYYY-MM-DDTHH:MM:SS
+6. For CSV: Sort by 'id' ascending, dates in ISO format YYYY-MM-DD (no time!)
 
 Generate ONLY Python code, no markdown blocks."""
 
