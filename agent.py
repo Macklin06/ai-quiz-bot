@@ -699,40 +699,35 @@ import urllib.parse
 import re
 
 base_url = '{base_url}'
-# Find and load the tools.json from the page - look for href containing tools.json
-tools_url = urllib.parse.urljoin(base_url, 'FIND_TOOLS_JSON_PATH_FROM_PAGE')
 
+# Step 1: Fetch tools.json - find the path from the page (e.g., /project2/tools.json)
+tools_url = urllib.parse.urljoin(base_url, '/project2/tools.json')  # Adjust path from page!
 response = requests.get(tools_url)
 tools_config = response.json()
+print(f"DEBUG tools.json: {{tools_config}}", file=__import__('sys').stderr)
 
-# Read the tools and their EXACT argument names from tools.json
-tools = tools_config.get('tools', [])
+# Step 2: Get the prompt from tools.json and parse it
 prompt = tools_config.get('prompt', '')
+print(f"DEBUG prompt: {{prompt}}", file=__import__('sys').stderr)
 
-# DYNAMICALLY PARSE THE PROMPT - extract EXACT values:
-# Example prompt: "Find the status of issue 42 in repo demo/api and summarize in 60 words"
-
-# Extract issue ID (number after "issue")
+# Step 3: Extract values using regex on the ACTUAL prompt from tools.json
 issue_match = re.search(r'issue\s+(\d+)', prompt, re.IGNORECASE)
 issue_id = int(issue_match.group(1)) if issue_match else 42
 
-# Extract repo owner/name (format: owner/repo)
 repo_match = re.search(r'repo\s+(\w+)/(\w+)', prompt, re.IGNORECASE)
 owner = repo_match.group(1) if repo_match else "demo"
-repo = repo_match.group(2) if repo_match else "api"
+repo_name = repo_match.group(2) if repo_match else "api"
 
-# Extract word count (number before "words") - THIS IS CRITICAL!
-words_match = re.search(r'(\d+)\s+words', prompt, re.IGNORECASE)
-max_tokens = int(words_match.group(1)) if words_match else 60  # Use 60 as default, NOT 80!
+words_match = re.search(r'in\s+(\d+)\s+words', prompt, re.IGNORECASE)
+max_tokens = int(words_match.group(1)) if words_match else 60
 
-# For search_docs query: combine issue and repo context
-search_query = f"issue {{issue_id}} {{owner}}/{{repo}}"
+print(f"DEBUG extracted: issue={{issue_id}}, owner={{owner}}, repo={{repo_name}}, max_tokens={{max_tokens}}", file=__import__('sys').stderr)
 
-# Build plan with DYNAMICALLY EXTRACTED values:
+# Step 4: Build the plan with EXTRACTED values (NOT hardcoded!)
 plan = [
-    {{"tool": "search_docs", "args": {{"query": search_query}}}},
-    {{"tool": "fetch_issue", "args": {{"owner": owner, "repo": repo, "id": issue_id}}}},
-    {{"tool": "summarize", "args": {{"max_tokens": max_tokens}}}}  # Use extracted word count!
+    {{"tool": "search_docs", "args": {{"query": f"issue {{issue_id}} {{owner}}/{{repo_name}}"}}}},
+    {{"tool": "fetch_issue", "args": {{"owner": owner, "repo": repo_name, "id": issue_id}}}},
+    {{"tool": "summarize", "args": {{"max_tokens": max_tokens}}}}
 ]
 
 answer = json.dumps(plan, separators=(',', ':'))
