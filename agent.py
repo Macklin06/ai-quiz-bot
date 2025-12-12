@@ -12,16 +12,18 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 logger = logging.getLogger(__name__)
 
 # API Configuration - supports both Gemini (free) and OpenAI
-# API Configuration - supports Gemini (free), OpenAI, and OpenRouter (free)
-API_PROVIDER = os.getenv("API_PROVIDER", "openrouter").lower()  # "gemini", "openai", or "openrouter"
+# API Configuration - supports OpenAI/aipipe, Gemini, and OpenRouter
+# During evaluations, aipipe limits are increased - use it as default!
+API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()  # "openai", "gemini", or "openrouter"
 
 if API_PROVIDER == "openai":
+    # aipipe - limits increased during evaluations!
     from openai import OpenAI
     client = OpenAI(
         api_key=os.getenv("AI_PIPE_KEY"),
         base_url="https://aipipe.org/openai/v1"
     )
-    SOLVER_MODEL = os.getenv("SOLVER_MODEL", "gpt-4o-mini")
+    SOLVER_MODEL = os.getenv("SOLVER_MODEL", "gpt-4o-mini")  # Fast & reliable
 elif API_PROVIDER == "openrouter":
     # OpenRouter - FREE models available!
     from openai import OpenAI
