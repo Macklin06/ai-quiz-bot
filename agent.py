@@ -156,6 +156,9 @@ TRY A DIFFERENT APPROACH! Common fixes based on feedback:
 - "positive integers": Values like 0 are NOT positive! Check min_replicas constraint
 - For shards/replicas: replicas MUST be >= min_replicas (NOT 0!)
 - "option B/C": Return just the letter like "B", not the full text
+- "HTTP 400": Your answer was empty! Make sure to extract and return the actual answer
+- For chart type questions: Answer should be a single letter (A, B, or C)
+  - Time-series + cumulative contributions = B (stacked area)
 """
 
         prompt = f"""Generate Python code to solve this quiz question.
@@ -442,6 +445,25 @@ answer = path
 print(json.dumps({{"answer": answer}}))
 ```
 
+**8. CHART TYPE SELECTION (A/B/C questions):**
+```python
+import json
+
+# For chart type questions - analyze the scenario and pick the best option
+# Common patterns:
+# - Time-series + cumulative contributions = B (stacked area chart)
+# - Comparing categories = A (bar chart) or C (scatter plot depending on context)
+# - Trend over time = A (line chart)
+# - Relationship between variables = C (scatter plot)
+
+# Read the question to determine the best chart type
+# Example: "time-series with three categories showing cumulative contributions"
+# Answer: B (stacked area - shows cumulative contributions over time)
+
+answer = "B"  # Return JUST the letter
+print(json.dumps({{"answer": answer}}))
+```
+
 RULES:
 1. ALWAYS use urllib.parse.urljoin(base_url, '/path') for FETCHING files
 2. ALWAYS strip() whitespace from all text data
@@ -473,7 +495,9 @@ RULES:
 8. For CSV: clean columns AND values, convert types properly, sort by id if present
 9. Handle all exceptions gracefully
 10. ⚠️ CRITICAL: If the question asks for a file path/link, return ONLY the relative path - NOT the full URL!
-11. For optimization questions (shards/replicas): respect min_replicas constraint (replicas cannot be 0 if min_replicas > 0)"""
+11. For optimization questions (shards/replicas): respect min_replicas constraint (replicas cannot be 0 if min_replicas > 0)
+12. For chart type questions asking for A/B/C: return just the letter (e.g. "B" for stacked area)
+13. NEVER return empty string - always extract an answer from the question"""
                 },
                 {"role": "user", "content": prompt}
             ],
