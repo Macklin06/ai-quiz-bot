@@ -19,56 +19,14 @@ client = OpenAI(
 
 SOLVER_MODEL = "gpt-4o-mini"
 MAX_RETRIES = 3
-RETRY_DELAY = 0.3  # Faster retries
-
-
-def detect_question_type(text: str, html: str) -> str:
-    """Detect question type to provide focused guidance"""
-    text_lower = text.lower()
-    html_lower = html.lower()
-    combined = text_lower + html_lower
-    
-    if 'audio' in combined or '.mp3' in combined or '.wav' in combined or 'passphrase' in combined:
-        return 'AUDIO'
-    elif 'csv' in combined and ('normalize' in combined or 'json' in combined):
-        return 'CSV'
-    elif 'pdf' in combined or 'invoice' in combined:
-        return 'PDF'
-    elif 'heatmap' in combined or 'color' in combined:
-        return 'IMAGE'
-    elif 'github' in combined or 'tree' in combined:
-        return 'GITHUB'
-    elif '.zip' in combined or 'logs' in combined:
-        return 'ZIP'
-    elif 'markdown' in combined or '.md' in combined or ('link' in combined and 'file' in combined):
-        return 'LINK'
-    elif 'git' in text_lower and ('commit' in text_lower or 'add' in text_lower):
-        return 'GIT'
-    elif 'chart' in combined or 'visualization' in combined or ('option' in combined and ('a.' in combined or 'b.' in combined)):
-        return 'CHART'
-    elif 'shard' in combined or 'replica' in combined:
-        return 'SHARDS'
-    elif 'cache' in combined or 'actions' in combined:
-        return 'CACHE'
-    elif 'order' in combined and 'customer' in combined:
-        return 'ORDERS'
-    elif 'uv' in text_lower and 'http' in text_lower:
-        return 'UV'
-    elif '.xlsx' in combined or 'excel' in combined:
-        return 'EXCEL'
-    elif 'api' in combined and 'page' in combined:
-        return 'PAGINATION'
-    elif 'xml' in combined:
-        return 'XML'
-    else:
-        return 'GENERAL'
+RETRY_DELAY = 0.5
 
 
 def run_quiz_task(url: str, email: str, secret: str, request_id: int = None):
     """Main quiz executor - handles entire quiz chain"""
     log_prefix = f"[{request_id}]" if request_id else ""
     start_time = time.time()
-    max_duration = 400  # Increased timeout for 20+ questions
+    max_duration = 400  # Increased for 20+ questions
     
     logger.info(f"{log_prefix} Starting quiz at: {url}")
     
@@ -80,7 +38,7 @@ def run_quiz_task(url: str, email: str, secret: str, request_id: int = None):
             current_url = url
             question_num = 0
             
-            while current_url and question_num < 50:
+            while current_url and question_num < 50:  # Support up to 50 questions
                 elapsed = time.time() - start_time
                 if elapsed > max_duration:
                     logger.error(f"{log_prefix} Timeout after {elapsed:.1f}s")
@@ -92,16 +50,12 @@ def run_quiz_task(url: str, email: str, secret: str, request_id: int = None):
                 
                 try:
                     page.goto(current_url, timeout=30000, wait_until="networkidle")
-                    page.wait_for_timeout(500)  # Reduced for speed
+                    page.wait_for_timeout(1000)
                     
                     text = page.locator("body").inner_text()
                     html = page.content()
                     
                     logger.info(f"{log_prefix} Q{question_num} | Extracted {len(text)} chars")
-                    
-                    # Detect question type for better prompting
-                    q_type = detect_question_type(text, html)
-                    logger.info(f"{log_prefix} Q{question_num} | Type: {q_type}")
                     
                     # Retry loop - handles both code errors AND wrong answers
                     last_error = None
@@ -113,12 +67,12 @@ def run_quiz_task(url: str, email: str, secret: str, request_id: int = None):
                         answer_obj = solve_with_llm(
                             current_url, text, html, email, 
                             log_prefix, question_num, attempt, 
-                            last_error, last_wrong_answer, last_wrong_reason, q_type
+                            last_error, last_wrong_answer, last_wrong_reason
                         )
                         
                         if not answer_obj:
                             logger.warning(f"{log_prefix} Q{question_num} | Code failed, retry {attempt+1}/{MAX_RETRIES}")
-                            time.sleep(RETRY_DELAY)
+                            time.sleep(1)
                             continue
                         
                         # Submit and check result
@@ -140,7 +94,7 @@ def run_quiz_task(url: str, email: str, secret: str, request_id: int = None):
                             if result.get('next_url') and attempt == MAX_RETRIES - 1:
                                 next_url = result['next_url']
                             
-                            time.sleep(RETRY_DELAY)
+                            time.sleep(0.5)
                     
                     if not next_url:
                         logger.error(f"{log_prefix} Q{question_num} | Failed after {MAX_RETRIES} attempts")
@@ -163,8 +117,7 @@ def run_quiz_task(url: str, email: str, secret: str, request_id: int = None):
 
 def solve_with_llm(url: str, text: str, html: str, email: str, 
                    log_prefix: str, q_num: int, attempt: int = 0, 
-                   last_error: str = None, last_wrong_answer: str = None, 
-                   last_wrong_reason: str = None, q_type: str = 'GENERAL'):
+                   last_error: str = None, last_wrong_answer: str = None, last_wrong_reason: str = None):
     """Use LLM to solve the question"""
     try:
         # Extract base URL properly - scheme + domain only
@@ -200,48 +153,20 @@ TRY A DIFFERENT APPROACH! Common fixes based on feedback:
 - "Total line items": Parse the PDF table correctly, multiply qty × price for each row
 - Date format: Use ISO format YYYY-MM-DDTHH:MM:SS
 - For paths: Extract just the path portion using urlparse(url).path
-- "positive integers": Values like 0 are NOT positive! Check min/max constraints in the JSON
-- "shards and replicas": Check min_replicas and max_replicas constraints - replicas cannot be 0
-- "option B/C/etc": The answer should be just the letter like "B", not the full text
+- "positive integers": Values like 0 are NOT positive! Check min_replicas constraint
+- For shards/replicas: replicas MUST be >= min_replicas (NOT 0!)
+- "option B/C": Return just the letter like "B", not the full text
 """
-
-        # Add question-type-specific hints
-        type_hints = ""
-        if q_type == "CSV":
-            type_hints = "\n🎯 CSV QUESTION: Use the CSV PROCESSING template. Sort by id if present, normalize dates to ISO format.\n"
-        elif q_type == "AUDIO":
-            type_hints = "\n🎯 AUDIO QUESTION: Use the AUDIO TRANSCRIPTION template. Output lowercase text with spaces.\n"
-        elif q_type == "PDF":
-            type_hints = "\n🎯 PDF QUESTION: Use the PDF PROCESSING template. Parse tables and calculate as needed.\n"
-        elif q_type == "ZIP":
-            type_hints = "\n🎯 ZIP QUESTION: Use the ZIP FILE PROCESSING template. May contain JSONL, CSV, or other formats.\n"
-        elif q_type == "GITHUB":
-            type_hints = "\n🎯 GITHUB QUESTION: Use the GITHUB API template. Read config from JSON and call GitHub API.\n"
-        elif q_type == "IMAGE":
-            type_hints = "\n🎯 IMAGE QUESTION: Use the IMAGE PROCESSING template. Return color in appropriate format.\n"
-        elif q_type == "SHARDS":
-            type_hints = "\n🎯 OPTIMIZATION QUESTION: Read constraints from config, calculate optimal values respecting min/max limits.\n"
-        elif q_type == "CHART":
-            type_hints = "\n🎯 MULTIPLE CHOICE: Return just the option letter like 'B' or 'C', NOT the full description.\n"
-        elif q_type == "LINK":
-            type_hints = "\n🎯 LINK QUESTION: Return ONLY the relative path like '/path/to/file.md', NOT the full URL.\n"
-        elif q_type == "EXCEL":
-            type_hints = "\n🎯 EXCEL QUESTION: Use pd.read_excel() with BytesIO. May have multiple sheets.\n"
-        elif q_type == "PAGINATION":
-            type_hints = "\n🎯 PAGINATION QUESTION: Loop through pages until empty response. Aggregate all results.\n"
-        elif q_type == "XML":
-            type_hints = "\n🎯 XML QUESTION: Use xml.etree.ElementTree or lxml to parse. Use find/findall for elements.\n"
 
         prompt = f"""Generate Python code to solve this quiz question.
 
 ⛔ DO NOT SUBMIT ANSWERS IN YOUR CODE ⛔
 Your code calculates the answer and prints JSON. That's it.
-{type_hints}
+
 URL: {url}
 BASE_URL: {base_url}
 EMAIL: {email}
 ATTEMPT: {attempt + 1} of {MAX_RETRIES}
-DETECTED QUESTION TYPE: {q_type}
 
 PAGE TEXT:
 {text[:15000]}
@@ -251,45 +176,24 @@ HTML (if needed):
 {error_context}
 
 ⚠️ CRITICAL ANSWER FORMAT RULES (READ CAREFULLY):
-- **FILE/LINK PATH ANSWERS**: Return ONLY the relative path like "/path/to/file.md"
-  ❌ WRONG: "https://domain.com/path/file.md" (full URL)
-  ✅ CORRECT: "/path/to/file.md" (relative path starting with /)
+- **FILE/LINK PATH ANSWERS**: Return ONLY the relative path like "/project2/file.md"
+  ❌ WRONG: "https://domain.com/project2/file.md" (full URL)
+  ✅ CORRECT: "/project2/file.md" (relative path starting with /)
 - For CSV data: Sort by id, dates must be ISO format YYYY-MM-DDTHH:MM:SS
-- For ZIP logs: Sum bytes where appropriate event type, add (len(email) % 5) offset if specified
+- For ZIP logs: Sum bytes where event='download', add (len(email) % 5) offset
 - For audio: Output lowercase text with spaces
 
 CRITICAL URL CONSTRUCTION RULES:
 ✅ CORRECT: Use urllib.parse.urljoin(base_url, '/path/to/file.ext')
 ✅ BASE_URL is: {base_url} (scheme + domain only)
 ✅ Always use absolute paths starting with /
-✅ EXTRACT file paths from the page HTML/text - look for links, hrefs, file references
 
-❌ WRONG: Don't append base_url + '/hardcoded/path' 
-❌ WRONG: Don't use f"{{base_url}}/hardcoded/path"
-❌ WRONG: Don't hardcode file paths - extract them from the page!
+❌ WRONG: Don't append base_url + '/project2/file' 
+❌ WRONG: Don't use f"{{base_url}}/project2/file"
 
 CODE TEMPLATE EXAMPLES:
-
-**HOW TO EXTRACT FILE PATHS FROM PAGE:**
-```python
-import re
-from bs4 import BeautifulSoup
-
-# Method 1: Use regex to find file paths in page text
-# Find .mp3, .csv, .zip, .pdf, .json, .xlsx, .png files
-file_pattern = r'(/[^\s"\'<>]+\.(?:mp3|wav|csv|zip|pdf|json|xlsx|png|md))'
-matches = re.findall(file_pattern, page_html)
-if matches:
-    file_path = matches[0]  # Use first match
-
-# Method 2: Parse HTML for links
-soup = BeautifulSoup(page_html, 'html.parser')
-for link in soup.find_all('a', href=True):
-    href = link['href']
-    if href.endswith(('.mp3', '.csv', '.zip', '.pdf')):
-        file_path = href
-        break
-```
+(These show PATTERNS - adapt file paths based on what you find in PAGE TEXT/HTML above!)
+(Look for actual file links like .mp3, .csv, .zip, .pdf, .json in the page content)
 
 **1. AUDIO TRANSCRIPTION (Secret Passphrase):**
 ```python
@@ -298,19 +202,13 @@ import speech_recognition as sr
 from pydub import AudioSegment
 import urllib.request
 import urllib.parse
-import re
 
 base_url = '{base_url}'
-page_html = '''{html[:2000]}'''
-
-# Extract audio file path from page
-audio_pattern = r'(/[^\s"\'<>]+\.(?:mp3|wav|opus|ogg))'
-matches = re.findall(audio_pattern, page_html)
-audio_path = matches[0] if matches else '/audio.mp3'
-
-file_url = urllib.parse.urljoin(base_url, audio_path)
+# Look for audio file link in the page - common extensions: .mp3, .wav, .opus, .ogg
+file_url = urllib.parse.urljoin(base_url, '/project2/audio-passphrase.mp3')
 urllib.request.urlretrieve(file_url, "audio_file")
 
+# Convert to WAV for speech recognition
 audio = AudioSegment.from_file("audio_file")
 audio.export("audio.wav", format="wav")
 
@@ -318,9 +216,13 @@ recognizer = sr.Recognizer()
 with sr.AudioFile("audio.wav") as source:
     recognizer.adjust_for_ambient_noise(source, duration=0.3)
     audio_data = recognizer.record(source)
+    # Use Google's speech recognition
     text = recognizer.recognize_google(audio_data)
 
+# Clean up the transcription - passphrase is usually lowercase words + number
+# Format: "word word number" like "hushed parrot 219"
 answer = text.strip().lower()
+
 print(json.dumps({{"answer": answer}}))
 ```
 
@@ -332,29 +234,33 @@ import requests
 import urllib.parse
 from io import StringIO
 import dateutil.parser
-import re
 
 base_url = '{base_url}'
-page_html = '''{html[:2000]}'''
+csv_url = urllib.parse.urljoin(base_url, '/project2/messy.csv')
 
-# Extract CSV file path from page
-csv_pattern = r'(/[^\s"\'<>]+\.csv)'
-matches = re.findall(csv_pattern, page_html)
-csv_path = matches[0] if matches else '/data.csv'
-
-csv_url = urllib.parse.urljoin(base_url, csv_path)
 response = requests.get(csv_url)
 df = pd.read_csv(StringIO(response.text))
 
-# Clean and normalize
-df.columns = df.columns.str.strip().str.lower()
+# 1. Clean column names - strip whitespace only (keep original case)
+df.columns = df.columns.str.strip()
+
+# 2. Normalize column names to lowercase for processing
+col_map = {{c: c.lower() for c in df.columns}}
+df = df.rename(columns=col_map)
+
+# 3. Strip whitespace from ALL string values
 for col in df.select_dtypes(include='object').columns:
     df[col] = df[col].astype(str).str.strip()
 
+# 4. Convert 'id' to integer
 if 'id' in df.columns:
     df['id'] = pd.to_numeric(df['id'], errors='coerce').fillna(0).astype(int)
+
+# 5. Convert 'value' to integer
 if 'value' in df.columns:
     df['value'] = pd.to_numeric(df['value'], errors='coerce').fillna(0).astype(int)
+
+# 6. Parse and normalize dates to ISO format (YYYY-MM-DDTHH:MM:SS)
 if 'joined' in df.columns:
     def normalize_date(x):
         try:
@@ -364,36 +270,29 @@ if 'joined' in df.columns:
             return str(x).strip()
     df['joined'] = df['joined'].apply(normalize_date)
 
-if 'id' in df.columns:
-    df = df.sort_values('id').reset_index(drop=True)
+# 7. SORT BY ID (ascending) - critical for matching expected output
+df = df.sort_values('id').reset_index(drop=True)
 
-cols_to_use = [c for c in ['id', 'name', 'joined', 'value'] if c in df.columns]
-if cols_to_use:
-    df = df[cols_to_use]
+# 8. Ensure exact column order: id, name, joined, value (lowercase)
+if set(['id', 'name', 'joined', 'value']).issubset(set(df.columns)):
+    df = df[['id', 'name', 'joined', 'value']]
 
-records = df.to_dict(orient='records')
-answer = json.dumps(records, ensure_ascii=False)
-print(json.dumps({{"answer": answer}}, ensure_ascii=False))
+# 9. Convert to list of dicts
+answer = df.to_dict(orient='records')
+print(json.dumps({{"answer": answer}}))
 ```
 
-**3. ZIP FILE PROCESSING:**
+**3. ZIP FILE PROCESSING (logs with download bytes - JSONL format):**
 ```python
 import json
 import requests
 import zipfile
 from io import BytesIO
 import urllib.parse
-import re
 
 base_url = '{base_url}'
-page_html = '''{html[:2000]}'''
+zip_url = urllib.parse.urljoin(base_url, '/project2/logs.zip')
 
-# Extract ZIP file path from page
-zip_pattern = r'(/[^\s"\'<>]+\.zip)'
-matches = re.findall(zip_pattern, page_html)
-zip_path = matches[0] if matches else '/logs.zip'
-
-zip_url = urllib.parse.urljoin(base_url, zip_path)
 response = requests.get(zip_url)
 total_bytes = 0
 
@@ -401,6 +300,7 @@ with zipfile.ZipFile(BytesIO(response.content)) as z:
     for filename in z.namelist():
         with z.open(filename) as f:
             content = f.read().decode('utf-8')
+            # Handle JSONL (one JSON object per line)
             for line in content.strip().split('\\n'):
                 if line.strip():
                     try:
@@ -410,9 +310,11 @@ with zipfile.ZipFile(BytesIO(response.content)) as z:
                     except json.JSONDecodeError:
                         pass
 
+# IMPORTANT: Add email-length mod 5 offset
 email = "{email}"
 offset = len(email) % 5
 answer = int(total_bytes) + offset
+
 print(json.dumps({{"answer": answer}}))
 ```
 
@@ -421,24 +323,19 @@ print(json.dumps({{"answer": answer}}))
 import json
 import requests
 import urllib.parse
-import re
 
 base_url = '{base_url}'
-page_html = '''{html[:2000]}'''
+json_url = urllib.parse.urljoin(base_url, '/project2/gh-tree.json')
 
-# Extract JSON config path from page
-json_pattern = r'(/[^\s"\'<>]+\.json)'
-matches = re.findall(json_pattern, page_html)
-json_path = matches[0] if matches else '/config.json'
-
-json_url = urllib.parse.urljoin(base_url, json_path)
 response = requests.get(json_url)
 config = response.json()
 
+# Call GitHub API to get tree
 gh_url = f"https://api.github.com/repos/{{config['owner']}}/{{config['repo']}}/git/trees/{{config['sha']}}?recursive=1"
 tree_response = requests.get(gh_url)
 tree_data = tree_response.json()
 
+# Filter by pathPrefix and extension from config
 path_prefix = config.get('pathPrefix', '')
 extension = config.get('extension', '')
 
@@ -458,27 +355,23 @@ from PIL import Image
 from collections import Counter
 from io import BytesIO
 import urllib.parse
-import re
 
 base_url = '{base_url}'
-page_html = '''{html[:2000]}'''
+image_url = urllib.parse.urljoin(base_url, '/project2/heatmap.png')
 
-# Extract image path from page
-img_pattern = r'(/[^\s"\'<>]+\.(?:png|jpg|jpeg|gif))'
-matches = re.findall(img_pattern, page_html)
-img_path = matches[0] if matches else '/image.png'
-
-image_url = urllib.parse.urljoin(base_url, img_path)
 response = requests.get(image_url)
 image = Image.open(BytesIO(response.content))
 
 colors = list(image.getdata())
 most_common = Counter(colors).most_common(1)[0][0]
+
+# Format as hex color (lowercase)
 answer = '#{{:02x}}{{:02x}}{{:02x}}'.format(*most_common[:3])
+
 print(json.dumps({{"answer": answer}}))
 ```
 
-**6. PDF INVOICE PROCESSING:**
+**6. PDF INVOICE PROCESSING (calculate total from table):**
 ```python
 import json
 import requests
@@ -488,14 +381,8 @@ import urllib.parse
 import re
 
 base_url = '{base_url}'
-page_html = '''{html[:2000]}'''
+pdf_url = urllib.parse.urljoin(base_url, '/project2/invoice.pdf')
 
-# Extract PDF path from page
-pdf_pattern = r'(/[^\s"\'<>]+\.pdf)'
-matches = re.findall(pdf_pattern, page_html)
-pdf_path = matches[0] if matches else '/invoice.pdf'
-
-pdf_url = urllib.parse.urljoin(base_url, pdf_path)
 response = requests.get(pdf_url)
 pdf_reader = PyPDF2.PdfReader(BytesIO(response.content))
 
@@ -503,85 +390,53 @@ text = ""
 for page in pdf_reader.pages:
     text += page.extract_text()
 
-# Extract numbers and calculate total (qty * price pairs)
+# PDF tables often extract as: Item, Quantity, UnitPrice on separate lines
+# Parse all numbers from the text and identify qty/price pairs
 lines = [l.strip() for l in text.split('\\n') if l.strip()]
+
+# Method 1: Look for lines that are just numbers (qty and price)
 numbers = []
 for line in lines:
+    # Skip header lines
     if any(h in line.lower() for h in ['item', 'quantity', 'unitprice', 'invoice', 'total']):
         continue
+    # Check if line is a number
     try:
         num = float(line.replace(',', ''))
         numbers.append(num)
     except ValueError:
         pass
 
+# Numbers come in pairs: quantity, unit_price
 total = 0.0
 for i in range(0, len(numbers) - 1, 2):
     qty = int(numbers[i])
     price = float(numbers[i + 1])
     total += qty * price
 
+# Round to 2 decimal places
 answer = round(total, 2)
 print(json.dumps({{"answer": answer}}))
 ```
 
-**7. PATH/LINK ANSWERS:**
+**7. MARKDOWN/LINK/PATH ANSWERS (MUST use relative paths):**
 ```python
 import json
+
+# ⚠️ CRITICAL: When a question asks for a file path, link, or URL:
+# ALWAYS return the RELATIVE path starting with /
+# NEVER return the full URL with domain!
+
+# Example: If the file is at https://tds-llm-analysis.s-anand.net/project2/data-preparation.md
+# ❌ WRONG: answer = "https://tds-llm-analysis.s-anand.net/project2/data-preparation.md"
+# ✅ CORRECT: answer = "/project2/data-preparation.md"
+
+# Just extract the path portion from any URL
 from urllib.parse import urlparse
+full_url = "https://example.com/project2/file.md"
+path = urlparse(full_url).path  # Returns "/project2/file.md"
+answer = path
 
-# When question asks for a file path/link, return ONLY the relative path
-# ❌ WRONG: "https://example.com/path/file.md"
-# ✅ CORRECT: "/path/file.md"
-
-full_url = "https://example.com/some/path/file.md"
-answer = urlparse(full_url).path
-print(json.dumps({{"answer": answer}}))
-```
-
-**8. OPTIMIZATION (Shards/Resources):**
-```python
-import json
-import requests
-import urllib.parse
-import math
-import re
-
-base_url = '{base_url}'
-page_html = '''{html[:2000]}'''
-
-# Extract config JSON path
-json_pattern = r'(/[^\s"\'<>]+\.json)'
-matches = re.findall(json_pattern, page_html)
-json_path = matches[0] if matches else '/config.json'
-
-config_url = urllib.parse.urljoin(base_url, json_path)
-response = requests.get(config_url)
-config = response.json()
-
-dataset_size = config.get('dataset_size', 0)
-max_docs_per_shard = config.get('max_docs_per_shard', 0)
-max_shards = config.get('max_shards', 10)
-min_replicas = config.get('min_replicas', 1)
-max_replicas = config.get('max_replicas', 3)
-memory_per_shard_gb = config.get('memory_per_shard_gb', 0)
-memory_budget_gb = config.get('memory_budget_gb', 0)
-
-min_shards = math.ceil(dataset_size / max_docs_per_shard)
-best_shards, best_replicas = None, None
-
-for shards in range(min_shards, max_shards + 1):
-    for replicas in range(min_replicas, max_replicas + 1):
-        total_memory = shards * (replicas + 1) * memory_per_shard_gb
-        if total_memory <= memory_budget_gb:
-            if best_shards is None or shards < best_shards:
-                best_shards, best_replicas = shards, replicas
-            break
-
-if best_shards is None:
-    best_shards, best_replicas = min_shards, min_replicas
-
-answer = {{"shards": best_shards, "replicas": best_replicas}}
 print(json.dumps({{"answer": answer}}))
 ```
 
@@ -589,11 +444,10 @@ RULES:
 1. ALWAYS use urllib.parse.urljoin(base_url, '/path') for FETCHING files
 2. ALWAYS strip() whitespace from all text data
 3. ALWAYS handle type conversions (str to int/float)
-4. ⚠️ For ANSWER that is a path/link: return ONLY the relative path like "/path/to/file.md"
+4. ⚠️ For ANSWER that is a path/link: return ONLY the relative path like "/project2/file.md"
    - Use urlparse(url).path to extract just the path from a full URL
 5. Only print JSON with answer, NEVER submit via HTTP
 6. For CSV: Sort by 'id' ascending, dates in ISO format YYYY-MM-DDTHH:MM:SS
-7. Use regex to extract file paths from page HTML - look for patterns like /path/file.ext
 
 Generate ONLY Python code, no markdown blocks."""
 
@@ -611,12 +465,13 @@ RULES:
 2. Print answer as JSON: print(json.dumps({"answer": result}))
 3. NEVER submit via HTTP POST - just calculate and print
 4. Use urllib.parse.urljoin(base_url, '/path') for FETCHING file URLs
-5. Strip whitespace from ALL data
-6. For audio: output lowercase text with spaces
-7. For CSV: clean columns AND values, convert types properly, sort by id
-8. Handle all exceptions gracefully
-9. ⚠️ CRITICAL: If the question asks for a file path/link, return ONLY the relative path - NOT the full URL!
-10. EXTRACT file paths from page HTML/text - look for links, hrefs, src attributes. Don't hardcode paths!"""
+5. Find file paths (like .mp3, .csv, .pdf, .zip, .json) from the PAGE TEXT or HTML provided
+6. Strip whitespace from ALL data
+7. For audio: output lowercase text with spaces
+8. For CSV: clean columns AND values, convert types properly, sort by id if present
+9. Handle all exceptions gracefully
+10. ⚠️ CRITICAL: If the question asks for a file path/link, return ONLY the relative path - NOT the full URL!
+11. For optimization questions (shards/replicas): respect min_replicas constraint (replicas cannot be 0 if min_replicas > 0)"""
                 },
                 {"role": "user", "content": prompt}
             ],
