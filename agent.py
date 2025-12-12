@@ -11,71 +11,113 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 
 logger = logging.getLogger(__name__)
 
-# API Configuration - supports both Gemini (free) and OpenAI
-# API Configuration - supports OpenAI/aipipe, Gemini, and OpenRouter
-# During evaluations, aipipe limits are increased - use it as default!
-API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()  # "openai", "gemini", or "openrouter"
+# API Configuration - supports OpenAI/aipipe, OpenRouter, and Gemini
+# With automatic fallback if one API fails!
+from openai import OpenAI
 
-if API_PROVIDER == "openai":
-    # aipipe - limits increased during evaluations!
-    from openai import OpenAI
-    client = OpenAI(
+logger = logging.getLogger(__name__)
+
+# Initialize all available clients
+CLIENTS = {}
+MODELS = {}
+
+# OpenAI/aipipe (primary - limits increased during evaluations)
+if os.getenv("AI_PIPE_KEY"):
+    CLIENTS["openai"] = OpenAI(
         api_key=os.getenv("AI_PIPE_KEY"),
         base_url="https://aipipe.org/openai/v1"
     )
-    SOLVER_MODEL = os.getenv("SOLVER_MODEL", "gpt-4o-mini")  # Fast & reliable
-elif API_PROVIDER == "openrouter":
-    # OpenRouter - FREE models available!
-    from openai import OpenAI
-    client = OpenAI(
+    MODELS["openai"] = os.getenv("SOLVER_MODEL", "gpt-4o-mini")
+
+# OpenRouter (backup - free tier)
+if os.getenv("OPENROUTER_API_KEY"):
+    CLIENTS["openrouter"] = OpenAI(
         api_key=os.getenv("OPENROUTER_API_KEY"),
         base_url="https://openrouter.ai/api/v1"
     )
-    # Free models: mistralai/devstral-2512:free, amazon/nova-2-lite-v1:free
-    SOLVER_MODEL = os.getenv("SOLVER_MODEL", "mistralai/devstral-2512:free")
-else:
-    # Gemini API - FREE tier with generous limits!
-    # gemini-2.0-flash has HIGHER free tier limits than 2.5-flash!
-    import google.generativeai as genai
-    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-    SOLVER_MODEL = os.getenv("SOLVER_MODEL", "gemini-2.0-flash")  # Higher free tier limits!
+    MODELS["openrouter"] = "mistralai/devstral-2512:free"
+
+# Gemini (backup - free tier)
+if os.getenv("GEMINI_API_KEY"):
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+        CLIENTS["gemini"] = genai
+        MODELS["gemini"] = "gemini-2.0-flash"
+    except:
+        pass
+
+# Provider priority order
+API_PROVIDER = os.getenv("API_PROVIDER", "openai").lower()
+PROVIDER_ORDER = [API_PROVIDER] + [p for p in ["openai", "openrouter", "gemini"] if p != API_PROVIDER]
 
 MAX_RETRIES = 3
 RETRY_DELAY = 0.5
 
 
 def call_llm(messages: list) -> str:
-    """Unified LLM call - works with Gemini, OpenAI, and OpenRouter"""
-    if API_PROVIDER in ("openai", "openrouter"):
-        response = client.chat.completions.create(
-            model=SOLVER_MODEL,
-            messages=messages,
-            temperature=0.1,
-            max_tokens=4096
-        )
-        return response.choices[0].message.content
-    else:
-        # Gemini API
-        model = genai.GenerativeModel(SOLVER_MODEL)
-        # Convert OpenAI format to Gemini format
-        prompt_parts = []
-        for msg in messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            if role == "system":
-                prompt_parts.append(f"Instructions: {content}\n\n")
+    """Unified LLM call with automatic fallback between providers"""
+    last_error = None
+    
+    for provider in PROVIDER_ORDER:
+        if provider not in CLIENTS:
+            continue
+            
+        try:
+            if provider in ("openai", "openrouter"):
+                response = CLIENTS[provider].chat.completions.create(
+                    model=MODELS[provider],
+                    messages=messages,
+                    temperature=0.1,
+                    max_tokens=4096
+                )
+                logger.info(f"LLM call successful with {provider}/{MODELS[provider]}")
+                return response.choices[0].message.content
             else:
-                prompt_parts.append(content)
-        
-        full_prompt = "\n".join(prompt_parts)
-        response = model.generate_content(
-            full_prompt,
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.1,
-                max_output_tokens=4096
-            )
-        )
-        return response.text
+                # Gemini API
+                model = CLIENTS[provider].GenerativeModel(MODELS[provider])
+                prompt_parts = []
+                for msg in messages:
+                    role = msg.get("role", "user")
+                    content = msg.get("content", "")
+                    if role == "system":
+                        prompt_parts.append(f"Instructions: {content}\n\n")
+                    else:
+                        prompt_parts.append(content)
+                
+                full_prompt = "\n".join(prompt_parts)
+                response = model.generate_content(
+                    full_prompt,
+                    generation_config=CLIENTS[provider].types.GenerationConfig(
+                        temperature=0.1,
+                        max_output_tokens=4096
+                    )
+                )
+                logger.info(f"LLM call successful with {provider}/{MODELS[provider]}")
+                return response.text
+                
+        except Exception as e:
+            error_msg = str(e)
+            logger.warning(f"Provider {provider} failed: {error_msg[:100]}...")
+            last_error = e
+            
+            # Check if it's a rate limit or quota error - try next provider
+            if "429" in error_msg or "quota" in error_msg.lower() or "rate" in error_msg.lower():
+                logger.info(f"Rate limited on {provider}, trying next provider...")
+                continue
+            # For auth errors, try next provider
+            if "401" in error_msg or "403" in error_msg or "invalid" in error_msg.lower():
+                logger.info(f"Auth error on {provider}, trying next provider...")
+                continue
+            # For other errors, still try next provider
+            continue
+    
+    # All providers failed
+    raise last_error or Exception("All API providers failed")
+
+
+# For logging which model is being used
+SOLVER_MODEL = MODELS.get(API_PROVIDER, "unknown")
 
 
 def run_quiz_task(url: str, email: str, secret: str, request_id: int = None):
