@@ -156,6 +156,7 @@ TRY A DIFFERENT APPROACH! Common fixes based on feedback:
 - "positive integers": Values like 0 are NOT positive! Check min_replicas constraint
 - For shards/replicas: replicas MUST be >= min_replicas (NOT 0!)
 - "option B/C": Return just the letter like "B", not the full text
+- "Cache ~/.npm": Generate GitHub Actions YAML step with uses: actions/cache@v4
 """
 
         prompt = f"""Generate Python code to solve this quiz question.
@@ -277,8 +278,10 @@ df = df.sort_values('id').reset_index(drop=True)
 if set(['id', 'name', 'joined', 'value']).issubset(set(df.columns)):
     df = df[['id', 'name', 'joined', 'value']]
 
-# 9. Convert to list of dicts
-answer = df.to_dict(orient='records')
+# 9. Convert to list of dicts, then to JSON STRING
+records = df.to_dict(orient='records')
+# IMPORTANT: Answer must be a JSON STRING, not a Python list!
+answer = json.dumps(records)
 print(json.dumps({{"answer": answer}}))
 ```
 
@@ -437,6 +440,34 @@ full_url = "https://example.com/project2/file.md"
 path = urlparse(full_url).path  # Returns "/project2/file.md"
 answer = path
 
+print(json.dumps({{"answer": answer}}))
+```
+
+**8. GITHUB ACTIONS CACHE STEP (generate YAML):**
+```python
+import json
+
+# ⚠️ For questions asking to "Cache ~/.npm with hashFiles" or similar:
+# Return a YAML snippet for GitHub Actions cache step
+
+# Read the question to identify:
+# 1. The path to cache (e.g., ~/.npm, ~/.cache/pip)
+# 2. The hashFiles pattern (e.g., **/package-lock.json)
+# 3. Any restore-keys prefix
+
+# Example: "Cache ~/.npm with hashFiles("**/package-lock.json") and restore-keys: npm-"
+cache_path = "~/.npm"
+hash_pattern = "**/package-lock.json"
+restore_key_prefix = "npm-"
+
+yaml_step = f'''- uses: actions/cache@v4
+  with:
+    path: {{cache_path}}
+    key: ${{{{ runner.os }}}}-{{restore_key_prefix}}${{{{ hashFiles('{hash_pattern}') }}}}
+    restore-keys: |
+      ${{{{ runner.os }}}}-{{restore_key_prefix}}'''
+
+answer = yaml_step.strip()
 print(json.dumps({{"answer": answer}}))
 ```
 
