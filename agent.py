@@ -255,12 +255,12 @@ def solve_with_llm(url: str, text: str, html: str, email: str,
                     
                     logger.info(f"{log_prefix} Q{q_num} | Extracted: issue={issue_id}, owner={owner}, repo={repo_name}, max_tokens={max_tokens}")
                     
-                    # Build the plan
+                    # Build the plan - use "name" key to match tools.json schema
                     import json
                     plan = [
-                        {"tool": "search_docs", "args": {"query": f"issue {issue_id} {owner}/{repo_name}"}},
-                        {"tool": "fetch_issue", "args": {"owner": owner, "repo": repo_name, "id": issue_id}},
-                        {"tool": "summarize", "args": {"max_tokens": max_tokens}}
+                        {"name": "search_docs", "args": {"query": f"issue {issue_id} {owner}/{repo_name}"}},
+                        {"name": "fetch_issue", "args": {"owner": owner, "repo": repo_name, "id": issue_id}},
+                        {"name": "summarize", "args": {"max_tokens": max_tokens}}
                     ]
                     
                     answer = json.dumps(plan, separators=(',', ':'))
