@@ -295,7 +295,9 @@ Server feedback: {last_wrong_reason}
 
 TRY A DIFFERENT APPROACH! Common fixes based on feedback:
 - "Link should be /path": Return ONLY the relative path, not full URL
-- "Normalized JSON does not match": Check column names, data types, date formats (YYYY-MM-DD only!), sorting
+- "Normalized JSON does not match" or "need id, first_name, last_name": 
+  - Rename columns: df.columns = df.columns.str.strip().str.replace(' ', '_')
+  - Use underscores not spaces: first_name NOT "first name"
 - "Total line items": Parse the PDF table correctly, multiply qty × price for each row
 - Date format: Use ISO format YYYY-MM-DD (no time component!)
 - For paths: Extract just the path portion using urlparse(url).path
@@ -304,12 +306,13 @@ TRY A DIFFERENT APPROACH! Common fixes based on feedback:
 - "option B/C": Return just the letter like "B", not the full text
 - "HTTP 400": Your answer was empty! Make sure to extract and return the actual answer
 - For chart type questions: Answer should be a single letter (A, B, or C)
-  - Time-series + cumulative contributions = B (stacked area)
+- "Count endpoints with status 200": Parse JSON, iterate endpoints list, check status field
+- "Q2 total should be X": Group by quarter (Q1=Jan-Mar, Q2=Apr-Jun, Q3=Jul-Sep, Q4=Oct-Dec), sum amounts
 - "Cache ~/.npm with hashFiles": Return GitHub Actions YAML like:
   - uses: actions/cache@v4
     with:
       path: ~/.npm
-      key: ${{ hashFiles("**/package-lock.json") }}
+      key: ${{{{ hashFiles("**/package-lock.json") }}}}
       restore-keys: |
         npm-
 """
@@ -791,6 +794,9 @@ RULES:
 7. ⚠️ ALWAYS check what columns exist in data before accessing them!
 8. ⚠️ For aggregation: compute totals by SUMMING value columns, don't look for pre-existing 'total' column!
 9. For tool calling plans: Read the tools.json to get the EXACT argument names required by each tool!
+10. ⚠️ For contacts/CSV with names: Use UNDERSCORES in column names (first_name, last_name, NOT "first name")
+11. ⚠️ For quarterly totals: Q1=Jan-Mar, Q2=Apr-Jun, Q3=Jul-Sep, Q4=Oct-Dec. Parse dates, group by quarter, sum amounts.
+12. ⚠️ For endpoints/status: Parse JSON array of endpoints, filter by status==200, count them.
 
 Generate ONLY Python code, no markdown blocks."""
 
