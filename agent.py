@@ -295,6 +295,33 @@ def solve_with_llm(url: str, text: str, html: str, email: str,
             except Exception as e:
                 logger.warning(f"{log_prefix} Q{q_num} | Direct API status handler failed: {e}, falling back to LLM")
         
+        # ===== SPECIAL HANDLER: Network Requests / Compression Question =====
+        # Directly handle network-requests.json questions to find gzip compression
+        if 'network-requests.json' in text or ('gzip' in text.lower() and 'compression' in text.lower()):
+            try:
+                import re
+                import requests
+                import json
+                # Find network-requests.json path from HTML
+                net_match = re.search(r'href="([^"]*network-requests\.json[^"]*)"', html)
+                if net_match:
+                    net_path = net_match.group(1)
+                    net_url = urllib.parse.urljoin(base_url, net_path)
+                    logger.info(f"{log_prefix} Q{q_num} | Fetching network-requests.json from: {net_url}")
+                    
+                    resp = requests.get(net_url, timeout=10)
+                    data = resp.json()
+                    
+                    # Find request with gzip compression
+                    requests_list = data.get('requests', [])
+                    for req in requests_list:
+                        if req.get('compression') == 'gzip':
+                            answer = req.get('id')
+                            logger.info(f"{log_prefix} Q{q_num} | Network gzip answer (direct): {answer}")
+                            return {"answer": answer}
+            except Exception as e:
+                logger.warning(f"{log_prefix} Q{q_num} | Direct network handler failed: {e}, falling back to LLM")
+        
         error_context = ""
         if last_error:
             error_context = f"""
