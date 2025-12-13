@@ -269,6 +269,32 @@ def solve_with_llm(url: str, text: str, html: str, email: str,
             except Exception as e:
                 logger.warning(f"{log_prefix} Q{q_num} | Direct tools handler failed: {e}, falling back to LLM")
         
+        # ===== SPECIAL HANDLER: API Status / Endpoints Question =====
+        # Directly handle api-status.json questions to count status 200
+        if 'api-status.json' in text or ('endpoints' in text.lower() and 'status' in text.lower() and '200' in text):
+            try:
+                import re
+                import requests
+                import json
+                # Find api-status.json path from HTML
+                status_match = re.search(r'href="([^"]*api-status\.json[^"]*)"', html)
+                if status_match:
+                    status_path = status_match.group(1)
+                    status_url = urllib.parse.urljoin(base_url, status_path)
+                    logger.info(f"{log_prefix} Q{q_num} | Fetching api-status.json from: {status_url}")
+                    
+                    resp = requests.get(status_url, timeout=10)
+                    data = resp.json()
+                    
+                    # Count endpoints with status 200
+                    endpoints = data.get('endpoints', [])
+                    count = sum(1 for ep in endpoints if ep.get('status') == 200)
+                    
+                    logger.info(f"{log_prefix} Q{q_num} | API status answer (direct): {count}")
+                    return {"answer": count}
+            except Exception as e:
+                logger.warning(f"{log_prefix} Q{q_num} | Direct API status handler failed: {e}, falling back to LLM")
+        
         error_context = ""
         if last_error:
             error_context = f"""
